@@ -303,7 +303,7 @@ class InitObsBuffer():
             warnings.warn('Replace was set to false, but is temporarily set to true because batch size is larger than current size of replay.')
 
         if standardize and self.obs_mean is not None:
-            init_obs = (self._init_obss[indices] - self.obs_mean) / self.obs_std
+            init_obs = (self._init_obss[indices] - self.obs_mean) / (self.obs_std + 1e-8)
             
         else:
             init_obs = self._init_obss[indices] 

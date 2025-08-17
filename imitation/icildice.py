@@ -66,6 +66,8 @@ class IcilDICE(nn.Module):
         self.prior_fit_nets = []
         self.prior_hidden_size = configs['policy']['layer_sizes'][-1]
         self.prior_output_size = configs['train']['prior_output_size']
+        self.uncertainty_threshold_update_freq = int(configs['train']['uncertainty_threshold_update_freq'])
+        self.uncertainty_gp_weight = float(configs['train']['uncertainty_gp_weight'])
 
         for i in range(self.n_prior_nets):
             prior_net = nn.Sequential(
@@ -91,13 +93,15 @@ class IcilDICE(nn.Module):
         self.prior_fit_optimizer = optim.Adam(self.prior_fit_params, lr=float(configs['train']['lr_prior']))
         
         self.uncertainty_estimates = \
-            lambda x: [(self.prior_nets[i](x) - self.prior_fit_nets[i](x)).norm(2, dim=-1) for i in range(self.n_prior_nets)]
+            lambda x: [torch.mean((self.prior_nets[i](x) - self.prior_fit_nets[i](x)) ** 2, dim=-1) for i in range(self.n_prior_nets)]
         
         self.uncertainty_threshold = 100.
         self.var_coef = 1.
         self.aleatoric_var = 0.
-        self.uncertainty_safe_quantile = 0.9998 # 0.02% Quantile
+        self.uncertainty_safe_quantile = float(configs['train']['uncertainty_safe_quantile']) # e.g. 0.998 Quantile
         self.pretrain_prior_steps = int(configs['train']['pretrain_prior_steps'])
+        self.current_uc_gradient_penalty = 0.
+        self.current_disc_gradient_penalty = 0.
 
         self.r_fn = \
             lambda x: - torch.log( 1 / (self.disc_network(x) + 1e-10) - 1 + 1e-10)
@@ -109,7 +113,7 @@ class IcilDICE(nn.Module):
         
         self.alpha = float(configs['train']['alpha'])
         self.disc_steps = int(configs['train']['disc_steps'])
-        self.gp_lambda = float(configs['train']['gp_lambda'])  # Gradient penalty coefficient
+        self.disc_gp_weight = float(configs['train']['disc_gp_weight'])  # Gradient penalty coefficient
         
         self.num_eval_iteration = int(configs['train']['num_evals'])
         self.envname = configs['env_id']
@@ -177,7 +181,6 @@ class IcilDICE(nn.Module):
 
         # Pretrain phase: Prior fitting or Expert discriminator fitting
         for num in range(0, int(self.pretrain_prior_steps + 1)):
-
             safe_batch = self.safe_replay_buffer.random_batch(batch_size, standardize=self.obs_standardize)
 
             safe_obs = torch.tensor(safe_batch['observations'], dtype=torch.float32, device=self.device)
@@ -201,59 +204,62 @@ class IcilDICE(nn.Module):
         safe_uncertainties = safe_uncertainties.cpu().detach().numpy()
         safe_uncertainties = np.maximum(0, safe_uncertainties)
 
-        self.uncertainty_threshold = np.percentile(safe_uncertainties, self.uncertainty_safe_quantile) # Select 99.9% Quantile as threshold
+        self.uncertainty_threshold = np.quantile(safe_uncertainties, self.uncertainty_safe_quantile) # Select 99.9% Quantile as threshold
              
         for num in range(0, int(total_iteration)+1):
             for _ in range(self.disc_steps):
-                self.disc_optimizer.zero_grad()
                 expert_batch = self.expert_replay_buffer.random_batch(batch_size, standardize=self.obs_standardize)
-                safe_batch = self.safe_replay_buffer.random_batch(batch_size, standardize=self.obs_standardize)
+                mixed_batch = self.mixed_replay_buffer.random_batch(batch_size, standardize=self.obs_standardize)
                 
                 expert_obs = torch.tensor(expert_batch['observations'], dtype=torch.float32, device=self.device)
                 expert_actions = torch.tensor(expert_batch['actions'], dtype=torch.float32, device=self.device)
 
-                safe_obs = torch.tensor(safe_batch['observations'], dtype=torch.float32, device=self.device)
-                safe_actions = torch.tensor(safe_batch['actions'], dtype=torch.float32, device=self.device)
+                mixed_obs = torch.tensor(mixed_batch['observations'], dtype=torch.float32, device=self.device)
+                mixed_actions = torch.tensor(mixed_batch['actions'], dtype=torch.float32, device=self.device)
 
                 expert_s_a = torch.cat([expert_obs, expert_actions], dim=-1)
-                safe_s_a = torch.cat([safe_obs, safe_actions], dim=-1)
+                mixed_s_a = torch.cat([mixed_obs, mixed_actions], dim=-1)
 
                 expert_disc = self.disc_network(expert_s_a)
-                safe_disc = self.disc_network(safe_s_a)
+                mixed_disc = self.disc_network(mixed_s_a)
 
-                disc_loss = -torch.log(expert_disc + 1e-10).mean() - torch.log(1 - safe_disc + 1e-10).mean()
+                disc_loss = -torch.log(expert_disc + 1e-10).mean() - torch.log(1 - mixed_disc + 1e-10).mean()
                 
                 # Add gradient penalty term
-                rand_coef = torch.rand(expert_s_a.size(0), 1, device=self.device)
-                rand_coef = rand_coef.expand(expert_s_a.size())
-                
-                # Interpolate between expert and safe samples
-                interpolated_s_a = rand_coef * expert_s_a + (1 - rand_coef) * safe_s_a
-                interpolated_s_a.requires_grad_(True)
-                
-                # Get discriminator output for interpolated samples
-                disc_interpolated = self.disc_network(interpolated_s_a)
-                
-                # Calculate gradients with respect to interpolated inputs
-                gradients = torch.autograd.grad(
-                    outputs=disc_interpolated,
-                    inputs=interpolated_s_a,
-                    grad_outputs=torch.ones_like(disc_interpolated),
-                    create_graph=True,
-                    retain_graph=True,
-                    only_inputs=True
-                )[0]
-                
-                # Calculate gradient penalty
-                gradients = gradients.view(gradients.size(0), -1)
-                gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
-                
-                # Store gradient penalty for logging
-                self.current_gradient_penalty = gradient_penalty
-                
-                # Add gradient penalty to discriminator loss
-                disc_loss += self.gp_lambda * gradient_penalty
+                if self.disc_gp_weight > 0:
+                    rand_coef = torch.rand(expert_s_a.size(0), 1, device=self.device)
+                    rand_coef = rand_coef.expand(expert_s_a.size())
+                    
+                    # Interpolate between expert and safe samples
+                    interpolated_s_a = rand_coef * expert_s_a + (1 - rand_coef) * mixed_s_a
+                    interpolated_s_a.requires_grad_(True)
+                    
+                    # Get discriminator output for interpolated samples
+                    disc_interpolated = self.disc_network(interpolated_s_a)
+                    
+                    # Calculate gradients with respect to interpolated inputs
+                    gradients = torch.autograd.grad(
+                        outputs=disc_interpolated,
+                        inputs=interpolated_s_a,
+                        grad_outputs=torch.ones_like(disc_interpolated),
+                        create_graph=True,
+                        retain_graph=True,
+                        only_inputs=True
+                    )[0]
+                    
+                    # Calculate gradient penalty
+                    gradients = gradients.view(gradients.size(0), -1)
+                    gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
+                    
+                    # Store gradient penalty for logging
+                    self.current_disc_gradient_penalty = gradient_penalty
+                    
+                    # Add gradient penalty to discriminator loss
+                    disc_loss += self.disc_gp_weight * gradient_penalty
+                else:
+                    self.current_disc_gradient_penalty = 0.
 
+                self.disc_optimizer.zero_grad()
                 disc_loss.backward()
                 self.disc_optimizer.step()
 
@@ -261,7 +267,42 @@ class IcilDICE(nn.Module):
                 prior_fit_outputs = [self.prior_fit_nets[i](safe_s_a) for i in range(self.n_prior_nets)]
 
                 prior_fit_loss = [F.mse_loss(prior_outputs[i], prior_fit_outputs[i]) for i in range(self.n_prior_nets)]
-                prior_fit_loss = sum(prior_fit_loss)
+                prior_fit_loss = torch.stack(prior_fit_loss).mean()
+                
+                if self.uncertainty_gp_weight > 0:
+                    # Add gradient penalty term
+                    rand_coef = torch.rand(safe_s_a.size(0), 1, device=self.device)
+                    rand_coef = rand_coef.expand(safe_s_a.size())
+
+                    # Interpolate between expert and safe samples
+                    interpolated_s_a = rand_coef * safe_s_a + (1 - rand_coef) * mixed_s_a
+                    interpolated_s_a.requires_grad_(True)
+                    
+                    # Get discriminator output for interpolated samples
+                    interpolated_prior_fit_outputs = torch.stack([self.prior_fit_nets[i](interpolated_s_a) for i in range(self.n_prior_nets)]) # (n_prior_nets, batch_size, prior_output_size)
+                    
+                    # Calculate gradients with respect to interpolated inputs
+                    gradients = torch.autograd.grad(
+                        outputs=interpolated_prior_fit_outputs,
+                        inputs=interpolated_s_a,
+                        grad_outputs=torch.ones_like(interpolated_prior_fit_outputs),
+                        create_graph=True,
+                        retain_graph=True,
+                        only_inputs=True
+                    )[0]
+                    
+                    # Calculate gradient penalty
+                    gradients = gradients.view(-1, gradients.size(-1)) # (n_prior_nets * batch_size, prior_output_size)
+                    gradient_penalties = ((gradients.norm(2, dim=-1) - 1) ** 2) # (n_prior_nets * batch_size)
+                    gradient_penalty = gradient_penalties.mean()
+                    
+                    # Store gradient penalty for logging
+                    self.current_uc_gradient_penalty = gradient_penalty
+                    
+                    # Add gradient penalty to discriminator loss
+                    prior_fit_loss += self.uncertainty_gp_weight * gradient_penalty
+                else:
+                    self.current_uc_gradient_penalty = 0.
 
                 self.prior_fit_optimizer.zero_grad()
                 prior_fit_loss.backward()
@@ -320,19 +361,20 @@ class IcilDICE(nn.Module):
 
             policy_loss.backward()
             self.policy_optimizer.step()
-            
-            if (num) % eval_freq == 0:
-                self.policy.eval()
-                eval_ret_mean, eval_ret_std, eval_cost_mean, eval_cost_std, eval_violation_rate, eval_length_mean = \
-                    self.evaluate(self.env, self.policy, num_evaluation=self.num_eval_iteration)
-                
+
+            if (num) % self.uncertainty_threshold_update_freq == 0:
                 safe_error = torch.stack(self.uncertainty_estimates(safe_s_a_total))
                 safe_error_mean = safe_error.mean(dim=0)
                 safe_error_var = safe_error.var(dim=0)
                 safe_uncertainties = safe_error_mean + self.var_coef * safe_error_var - self.aleatoric_var
                 safe_uncertainties = safe_uncertainties.cpu().detach().numpy()
                 safe_uncertainties = np.maximum(0, safe_uncertainties)
-                self.uncertainty_threshold = np.percentile(safe_uncertainties, self.uncertainty_safe_quantile)
+                self.uncertainty_threshold = np.quantile(safe_uncertainties, self.uncertainty_safe_quantile)
+            
+            if (num) % eval_freq == 0:
+                self.policy.eval()
+                eval_ret_mean, eval_ret_std, eval_cost_mean, eval_cost_std, eval_violation_rate, eval_length_mean = \
+                    self.evaluate(self.env, self.policy, num_evaluation=self.num_eval_iteration)
                 
                 mixed_error = torch.stack(self.uncertainty_estimates(mixed_s_a_total))
                 mixed_error_mean = mixed_error.mean(dim=0)
@@ -348,7 +390,7 @@ class IcilDICE(nn.Module):
                     self.wandb.log({'train/policy_loss':       policy_loss.item(), 
                                     'train/nu_loss':           nu_loss.item(),
                                     'train/disc_loss':         disc_loss.item(),
-                                    'train/gradient_penalty':  self.current_gradient_penalty.item(),
+                                    'train/disc_gradient_penalty':  self.current_disc_gradient_penalty.item(),
                                     'train/lambda':            self.lambda_.item(),
                                     'eval/episode_return':     eval_ret_mean,
                                     'eval/episode_cost':       eval_cost_mean,
@@ -357,6 +399,7 @@ class IcilDICE(nn.Module):
                                     'prior/uncertainty_threshold': self.uncertainty_threshold,
                                     'prior/num_oods_in_mixed':     mixed_num_oods,
                                     'prior/fit_loss':              prior_fit_loss.item(),
+                                    'prior/uc_gradient_penalty':  self.current_uc_gradient_penalty.item(),
                                }, step=num+1)
 
                 if eval_ret_mean > max_score:

@@ -121,6 +121,8 @@ def train(configs):
             standardize_obs=configs['replay_buffer']['standardize_obs'],
             standardize_act=configs['replay_buffer']['standardize_act']
         )
+        init_obs_buffer.set_statistics(obs_mean, obs_std)
+
         if safe_data_dict is not None:
             safe_replay_buffer.set_statistics(obs_mean, obs_std, act_mean, act_std)
         if mixed_data_dict is not None:
