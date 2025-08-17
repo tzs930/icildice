@@ -79,8 +79,10 @@ class GaussianPolicy(Mlp, TorchStochasticPolicy):
                 log_std = torch.sigmoid(self.log_std_logits)
             else:
                 raise ValueError(self.std_architecture)
-            log_std = self.min_log_std + log_std * (
-                        self.max_log_std - self.min_log_std)
+            
+            if self.min_log_std is not None and self.max_log_std is not None:
+                log_std = self.min_log_std + log_std * (
+                            self.max_log_std - self.min_log_std)
             std = torch.exp(log_std)
         else:
             std = torch.from_numpy(np.array([self.std, ])).float().to(

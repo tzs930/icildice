@@ -1,8 +1,8 @@
 from collections import deque
 
 import numpy as np
-from gym import Env
-from gym.spaces import Box
+from gymnasium import Env
+from gymnasium.spaces import Box
 
 from rlkit.envs.proxy_env import ProxyEnv
 

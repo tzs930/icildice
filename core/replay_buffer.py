@@ -1,4 +1,4 @@
-from gym.spaces import Discrete
+# from gym.spaces import Discrete
 
 from rlkit.envs.env_utils import get_dim
 import numpy as np
@@ -264,11 +264,11 @@ class EnvReplayBuffer(SimpleReplayBuffer):
 
     def add_sample(self, observation, action, reward, terminal,
                    next_observation, **kwargs):
-        if isinstance(self._action_space, Discrete):
-            new_action = np.zeros(self._action_dim)
-            new_action[action] = 1
-        else:
-            new_action = action
+        # if isinstance(self._action_space, Discrete):
+        #     new_action = np.zeros(self._action_dim)
+        #     new_action[action] = 1
+        # else:
+        new_action = action
 
         return super().add_sample(
             observation=observation,
@@ -374,12 +374,20 @@ class MDPReplayBuffer(SimpleReplayBuffer):
     #         # **kwargs
     #     )
 
-    def calculate_statistics(self):
-        self.obs_mean = np.mean(self._observations[:self._top], axis=0, keepdims=True)
-        self.obs_std = np.std(self._observations[:self._top], axis=0, keepdims=True)
-
-        self.act_mean = np.mean(self._actions[:self._top], axis=0, keepdims=True)
-        self.act_std = np.std(self._actions[:self._top], axis=0, keepdims=True)
+    def calculate_statistics(self, standardize_obs=False, standardize_act=False):
+        if standardize_obs:
+            self.obs_mean = np.mean(self._observations[:self._top], axis=0, keepdims=True)
+            self.obs_std = np.std(self._observations[:self._top], axis=0, keepdims=True)
+        else:
+            self.obs_mean = None
+            self.obs_std = None
+            
+        if standardize_act:
+            self.act_mean = np.mean(self._actions[:self._top], axis=0, keepdims=True)
+            self.act_std = np.std(self._actions[:self._top], axis=0, keepdims=True)
+        else:
+            self.act_mean = None
+            self.act_std = None
 
         return self.obs_mean, self.obs_std, self.act_mean, self.act_std
 
@@ -395,9 +403,9 @@ class MDPReplayBuffer(SimpleReplayBuffer):
             warnings.warn('Replace was set to false, but is temporarily set to true because batch size is larger than current size of replay.')
 
         if standardize and self.obs_mean is not None:
-            obss = (self._observations[indices] - self.obs_mean) / self.obs_std
+            obss = (self._observations[indices] - self.obs_mean) / (self.obs_std + 1e-8)
             # actions = (self._actions[indices] - self.act_mean) / self.act_std
-            next_obss = (self._next_obs[indices] - self.obs_mean) / self.obs_std
+            next_obss = (self._next_obs[indices] - self.obs_mean) / (self.obs_std + 1e-8)
         else:
             obss = self._observations[indices] 
             # actions = self._actions[indices]           
@@ -494,11 +502,11 @@ class MDPReplayBuffer(SimpleReplayBuffer):
 
     def add_sample(self, observation, action, reward, terminal,
                    next_observation, **kwargs):
-        if isinstance(self._action_space, Discrete):
-            new_action = np.zeros(self._action_dim)
-            new_action[action] = 1
-        else:
-            new_action = action
+        # if isinstance(self._action_space, Discrete):
+        #     new_action = np.zeros(self._action_dim)
+        #     new_action[action] = 1
+        # else:
+        new_action = action
 
         return super().add_sample(
             observation=observation,

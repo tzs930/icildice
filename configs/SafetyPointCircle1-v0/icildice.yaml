@@ -1,0 +1,52 @@
+method: IcilDICE
+env_id: SafetyPointCircle1-v0
+device: cuda
+use_wandb: True
+
+wandb:
+  project: 'offline-icil'
+  entity: 'tzs930'
+
+dataset:
+  dataset_path: 'dataset/SafetyPointCircle1-v0'
+  expert:
+    types: ['safe-expert-v0', 'unsafe-expert-v0'] #, 'safe-expert-v0']
+    start_indices: [0, 0] #, 0]
+    num_trajs: 100
+  safe:
+    types: ['safe-expert-v0', 'safe-medium-v0']
+    start_indices: [100, 0]
+    num_trajs: 100
+  mixed:
+    types: ['safe-expert-v0', 'safe-medium-v0', 'unsafe-expert-v0']
+    start_indices: [200, 100, 100]
+    num_trajs: 1000
+
+replay_buffer:
+  class: 'MDPReplayBuffer'
+  max_replay_buffer_size: 1000000
+  standardize_obs: True
+  standardize_act: False
+
+policy:
+  class: 'GaussianPolicy'
+  layer_sizes: [64, 64]
+
+train:
+  gamma: 0.99
+  alpha: 0. # Dataset Regularization Coefficient
+  lr: 3e-5
+  lr_nu: 3e-4
+  lr_disc: 3e-4
+  lr_prior: 3e-4
+  lr_lambda: 3e-4
+  gp_lambda: 10.0  # Gradient penalty coefficient
+  disc_steps: 1
+  total_iteration: 1000000
+  eval_freq: 10000
+  batch_size: 1024
+  save_policy_path: results/SafetyPointCircle1-v0/icildice
+  num_evals: 10
+  pretrain_prior_steps: 100
+  n_prior_nets: 2
+  prior_output_size: 10

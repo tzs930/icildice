@@ -11,21 +11,22 @@ def copy_nn_module(source, target):
     for target_param, param in zip(target.parameters(), source.parameters()):
         target_param.data.copy_(param.data)
 
-class BC(nn.Module):
+class JointBC(nn.Module):
     def __init__(self, policy, env, configs, best_policy=None,
-                 replay_buffer=None, n_train=1,add_absorbing_state=False):
+                 expert_replay_buffer=None, safe_replay_buffer=None, n_train=1,add_absorbing_state=False):
         
         seed = configs['seed']
         torch.manual_seed(seed)
         np.random.seed(seed)
         random.seed(seed)
         
-        super(BC, self).__init__()
+        super(JointBC, self).__init__()
 
         self.env = env
         self.policy = policy
         self.best_policy = best_policy
-        self.replay_buffer = replay_buffer
+        self.expert_replay_buffer = expert_replay_buffer
+        self.safe_replay_buffer = safe_replay_buffer
 
         self.device = configs['device']
         self.add_absorbing_state = add_absorbing_state
@@ -57,8 +58,8 @@ class BC(nn.Module):
         self.act_standardize = configs['replay_buffer']['standardize_act']
 
         if self.obs_standardize:
-            self.obs_mean = self.replay_buffer.obs_mean
-            self.obs_std = self.replay_buffer.obs_std 
+            self.obs_mean = self.expert_replay_buffer.obs_mean
+            self.obs_std = self.expert_replay_buffer.obs_std 
             self.obs_mean_tt = torch.tensor(self.obs_mean, device=self.device)
             self.obs_std_tt = torch.tensor(self.obs_std, device=self.device)
         else:
@@ -68,10 +69,10 @@ class BC(nn.Module):
             self.obs_std_tt = None
             
         if self.act_standardize:
-            self.act_mean = self.replay_buffer.act_mean
-            self.act_std = self.replay_buffer.act_std
-            self.act_mean_tt = torch.tensor(self.replay_buffer.act_mean, device=self.device)
-            self.act_std_tt = torch.tensor(self.replay_buffer.act_std, device=self.device)
+            self.act_mean = self.expert_replay_buffer.act_mean
+            self.act_std = self.expert_replay_buffer.act_std
+            self.act_mean_tt = torch.tensor(self.expert_replay_buffer.act_mean, device=self.device)
+            self.act_std_tt = torch.tensor(self.expert_replay_buffer.act_std, device=self.device)
         else:
             self.act_mean = None
             self.act_std = None
@@ -85,15 +86,23 @@ class BC(nn.Module):
         
         for num in range(0, int(total_iteration)+1):
             self.policy.train()
-            batch = self.replay_buffer.random_batch(batch_size, standardize=self.obs_standardize)
+            expert_batch = self.expert_replay_buffer.random_batch(batch_size, standardize=self.obs_standardize)
+            safe_batch = self.safe_replay_buffer.random_batch(batch_size, standardize=self.obs_standardize)
             
-            obs = batch['observations']
-            actions = batch['actions']
+            expert_obs = expert_batch['observations']
+            expert_actions = expert_batch['actions']
             
-            obs = torch.tensor(obs, dtype=torch.float32, device=self.device)
-            actions = torch.tensor(actions, dtype=torch.float32, device=self.device)            
-
-            train_loss = -self.policy.log_prob(obs, actions).mean()
+            safe_obs = safe_batch['observations']
+            safe_actions = safe_batch['actions']
+            
+            expert_obs = torch.tensor(expert_obs, dtype=torch.float32, device=self.device)
+            expert_actions = torch.tensor(expert_actions, dtype=torch.float32, device=self.device)
+            
+            safe_obs = torch.tensor(safe_obs, dtype=torch.float32, device=self.device)
+            safe_actions = torch.tensor(safe_actions, dtype=torch.float32, device=self.device)
+            
+            train_loss = - self.policy.log_prob(expert_obs, expert_actions).mean() \
+                         - self.policy.log_prob(safe_obs, safe_actions).mean()
             
             self.policy_optimizer.zero_grad()
             train_loss.backward()
@@ -160,15 +169,13 @@ class BC(nn.Module):
                 else:
                     action = policy(obs).sample().cpu().detach().numpy()
                 
-                next_obs, rew, cost, terminate, truncated, info = env.step(action)
-                # cost = info['cost']
-                # cost = cost
+                next_obs, rew, done, info = env.step(action)
+                cost = info['cost']
 
                 ret += rew
                 cum_cost += cost
                 
                 obs_ = next_obs 
-                done = terminate or truncated
                     
                 t += 1
             
@@ -179,4 +186,4 @@ class BC(nn.Module):
         violation_rate = np.mean(np.array(costs) > 0)
 
         return np.mean(rets), np.std(rets)/np.sqrt(num_evaluation), np.mean(costs), np.std(costs)/np.sqrt(num_evaluation), violation_rate, np.mean(lengths)
-    
+        # eval_ret_mean, eval_ret_std, eval_cost_mean, eval_cost_std, eval_violation_rate, eval_length_mean

@@ -1,6 +1,6 @@
-# Implementation Code for [DrilDICE (NeurIPS 2024)](https://openreview.net/pdf?id=lHcvjsQFQq)
+# Implementation Code for IcilDICE (under review)
 
-- This code contains official implementation codes of DrilDICE  and baselines for offline imitation learning.
+- This code contains official implementation codes of IcilDICE and baselines for offline inverse constrained imitation learning.
 
 ### 1. Prerequisites
 
@@ -12,11 +12,6 @@ conda activate drildice
 pip install d4rl
 ```
 
-- (optional) Download D4RL dataset:
-```
-python download_d4rl_dataset.py
-```
-
 ### 2. Generate Subsampling Indices for Covariate Shift Scenarios
 ```
 python generate_subsample_indices.py
@@ -26,7 +21,7 @@ python generate_subsample_indices.py
 - Train imitation policies using `main.py`.
 
 ### Toy Domain:
-- To run Four Rooms env., you should get MOSEK license.
+- To run toy domain env., you should get MOSEK license. (To obtain academic licenses, see https://www.mosek.com/products/academic-licenses/ )
 ```
 pip install cvxpy[mosek] mosek
 ```
