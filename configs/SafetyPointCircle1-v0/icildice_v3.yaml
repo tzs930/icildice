@@ -1,10 +1,10 @@
-method: IcilDICE
+method: IcilDICEv3
 env_id: SafetyPointCircle1-v0
 device: cuda
 use_wandb: True #True
 
 wandb:
-  project: 'offline-icil-250820'
+  project: 'offline-icil-250826'
   entity: 'tzs930'
 
 dataset:
@@ -18,9 +18,9 @@ dataset:
     start_indices: [500, 0]
     num_trajs:     [250, 250]
   mixed:
-    types: ['safe-expert-v0', 'safe-medium-v0', 'unsafe-expert-v0']
-    start_indices: [0, 0, 0]
-    num_trajs:     [1000, 1000, 1000]
+    types: ['safe-expert-v0', 'safe-medium-v0', 'unsafe-expert-v0', 'unsafe-medium-v0']
+    start_indices: [500, 500, 500, 500]
+    num_trajs:     [500, 500, 500, 500]
 
 replay_buffer:
   class: 'MDPReplayBuffer'
@@ -36,13 +36,18 @@ train:
   seed: 0
   gamma: 0.99
   alpha: 0. # Dataset Regularization Coefficient
-  lr: 3e-5
+  lr: 3e-4
   lr_nu: 3e-4
-  lr_disc: 3e-5
-  lr_prior: 3e-5
+  lr_disc: 3e-4
+  lr_prior: 3e-4
   lr_lambda: 3e-4
+  nu_hidden_size: [256, 256]
+  nu_gp_weight: 10.0
+  disc_hidden_size: [256, 256]
   disc_gp_weight: 10.0  # Gradient penalty coefficient
   disc_steps: 1
+  uc_disc_hidden_size: [256, 256]
+  uc_disc_gp_weight: 10.0
   total_iteration: 1000000
   eval_freq: 10000
   batch_size: 512
@@ -56,4 +61,8 @@ train:
   uncertainty_safe_quantile: 0.99
   uncertainty_threshold_update_freq: 100
   uncertainty_gp_weight: 10.0
-  prior_learning_during_train: False
+  indicator_weight: 1.0
+  lambda_starts: 1.0
+  use_soft_indicator: False
+  class_prior: 0.5
+  # prior_learning_during_train: False

@@ -7,15 +7,24 @@ import torch.optim as optim
 import torch.nn.functional as F
 import os
 
+performance_dict = {
+    'SafetyPointCircle1-v0': {
+        'safe_expert_score': 44.30,
+        'unsafe_expert_score': 54.55,
+        'random_score': 0., 
+        'cost_threshold': 25.,
+    }
+}
+
 def copy_nn_module(source, target):
     for target_param, param in zip(target.parameters(), source.parameters()):
         target_param.data.copy_(param.data)
 
 class BC(nn.Module):
     def __init__(self, policy, env, configs, best_policy=None,
-                 replay_buffer=None, n_train=1,add_absorbing_state=False):
+                replay_buffer=None, n_train=1,add_absorbing_state=False):
         
-        seed = configs['seed']
+        seed = configs['train']['seed']
         torch.manual_seed(seed)
         np.random.seed(seed)
         random.seed(seed)
@@ -101,7 +110,7 @@ class BC(nn.Module):
 
             if (num) % eval_freq == 0:
                 self.policy.eval()
-                eval_ret_mean, eval_ret_std, eval_cost_mean, eval_cost_std, eval_violation_rate, eval_length_mean = \
+                eval_ret_mean, eval_ret_std, eval_cost_mean, eval_cost_std, eval_violation_rate, eval_length_mean, eval_feasible_ret_mean, eval_feasible_ret_std = \
                     self.evaluate(self.env, self.policy, num_evaluation=self.num_eval_iteration)
                 
                 print(f'** iter{num}: policy_loss={train_loss.item():.2f}, ret={eval_ret_mean:.2f}+-{eval_ret_std:.2f}, cost={eval_cost_mean:.2f}+-{eval_cost_std:.2f}, violation_rate={eval_violation_rate:.2f}, length={eval_length_mean:.2f}')
@@ -112,6 +121,8 @@ class BC(nn.Module):
                                'eval/episode_cost':       eval_cost_mean,
                                'eval/violation_rate':     eval_violation_rate,
                                'eval/episode_length':     eval_length_mean,
+                               'eval/feasible_return':     eval_feasible_ret_mean,
+                               'eval/feasible_return_std': eval_feasible_ret_std,
                                }, step=num+1)
 
                 if eval_ret_mean > max_score:
@@ -135,6 +146,10 @@ class BC(nn.Module):
         rets = []
         costs = []
         lengths = []
+        rets_until_violation = []
+        cost_threshold = performance_dict[env.spec.id]['cost_threshold']
+        max_score = performance_dict[env.spec.id]['safe_expert_score']
+        min_score = performance_dict[env.spec.id]['random_score']
 
         # maxtimestep = 1000
         for num in range(0, num_evaluation):
@@ -144,6 +159,8 @@ class BC(nn.Module):
             t = 0
             ret = 0.
             cum_cost = 0.
+            violation = False
+            ret_until_violation = 0
             
             while not done:  #or t < maxtimestep
                 if self.add_absorbing_state:
@@ -161,22 +178,29 @@ class BC(nn.Module):
                     action = policy(obs).sample().cpu().detach().numpy()
                 
                 next_obs, rew, cost, terminate, truncated, info = env.step(action)
-                # cost = info['cost']
-                # cost = cost
 
                 ret += rew
                 cum_cost += cost
+                
+                if cum_cost > cost_threshold:
+                    violation = True
+                if not violation:
+                    ret_until_violation += rew
                 
                 obs_ = next_obs 
                 done = terminate or truncated
                     
                 t += 1
             
-            rets.append(ret)
+            normalized_ret = (ret - min_score) / (max_score - min_score) * 100.
+            normalized_ret_until_violation = (ret_until_violation - min_score) / (max_score - min_score) * 100.
+
+            rets.append(normalized_ret)
             costs.append(cum_cost)
             lengths.append(t)
+            rets_until_violation.append(normalized_ret_until_violation)
 
-        violation_rate = np.mean(np.array(costs) > 0)
+        violation_rate = np.mean(np.array(costs) > cost_threshold)
 
-        return np.mean(rets), np.std(rets)/np.sqrt(num_evaluation), np.mean(costs), np.std(costs)/np.sqrt(num_evaluation), violation_rate, np.mean(lengths)
+        return np.mean(rets), np.std(rets)/np.sqrt(num_evaluation), np.mean(costs), np.std(costs)/np.sqrt(num_evaluation), violation_rate, np.mean(lengths), np.mean(rets_until_violation), np.std(rets_until_violation)/np.sqrt(num_evaluation)
     

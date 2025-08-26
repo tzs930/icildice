@@ -7,7 +7,7 @@ class ReplayBuffer(object, metaclass=abc.ABCMeta):
     """
 
     @abc.abstractmethod
-    def add_sample(self, observation, action, reward, next_observation,
+    def add_sample(self, observation, action, reward, cost, next_observation,
                    terminal, **kwargs):
         """
         Add a transition tuple.
@@ -46,12 +46,14 @@ class ReplayBuffer(object, metaclass=abc.ABCMeta):
                 obs,
                 action,
                 reward,
+                cost,
                 next_obs,
                 terminal,
         ) in enumerate(zip(
             path["observations"],
             path["actions"],
             path["rewards"],
+            path["costs"],
             path["next_observations"],
             path["terminals"]
         )):
@@ -59,6 +61,7 @@ class ReplayBuffer(object, metaclass=abc.ABCMeta):
                 observation=obs,
                 action=action,
                 reward=reward,
+                cost=cost,
                 next_observation=next_obs,
                 terminal=terminal,
             )

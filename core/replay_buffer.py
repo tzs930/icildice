@@ -30,6 +30,7 @@ class SimpleReplayBuffer(ReplayBuffer):
         # Make everything a 2D np array to make it easier for other code to
         # reason about the shape of the data
         self._rewards = np.zeros((max_replay_buffer_size, 1))
+        self._costs = np.zeros((max_replay_buffer_size, 1))
         # self._terminals[i] = a terminal was received at time i
         self._terminals = np.zeros((max_replay_buffer_size, 1), dtype='uint8')
         # Define self._env_infos[key][i] to be the return value of env_info[key]
@@ -58,12 +59,13 @@ class SimpleReplayBuffer(ReplayBuffer):
             
     #     self._advance()
     
-    def add_sample(self, observation, action, reward, next_observation,
+    def add_sample(self, observation, action, reward, cost, next_observation,
                    terminal, **kwargs): # env_info, 
         self._observations[self._top] = observation
         self._actions[self._top] = action
         # self._prev_actions[self._top] = prev_action
         self._rewards[self._top] = reward
+        self._costs[self._top] = cost
         self._terminals[self._top] = terminal
         self._next_obs[self._top] = next_observation
 
@@ -222,6 +224,7 @@ class EnvReplayBuffer(SimpleReplayBuffer):
             actions=actions,
             # prev_actions=self._prev_actions[indices],
             rewards=self._rewards[indices],
+            costs=self._costs[indices],
             terminals=self._terminals[indices],
             next_observations=next_obss,
         )
@@ -253,6 +256,7 @@ class EnvReplayBuffer(SimpleReplayBuffer):
             actions=actions,
             # prev_actions=self._prev_actions[indices],
             rewards=self._rewards[indices],
+            costs=self._costs[indices],
             terminals=self._terminals[indices],
             next_observations=next_obss,
         )
@@ -262,7 +266,44 @@ class EnvReplayBuffer(SimpleReplayBuffer):
 
         return batch
 
-    def add_sample(self, observation, action, reward, terminal,
+    def add_path(self, path):
+        """
+        Add a path to the replay buffer.
+
+        This default implementation naively goes through every step, but you
+        may want to optimize this.
+
+        NOTE: You should NOT call "terminate_episode" after calling add_path.
+        It's assumed that this function handles the episode termination.
+
+        :param path: Dict like one outputted by rlkit.samplers.util.rollout
+        """
+        for i, (
+                obs,
+                action,
+                reward,
+                cost,
+                next_obs,
+                terminal,
+        ) in enumerate(zip(
+            path["observations"],
+            path["actions"],
+            path["rewards"],
+            path["costs"],
+            path["next_observations"],
+            path["terminals"]
+        )):
+            self.add_sample(
+                observation=obs,
+                action=action,
+                reward=reward,
+                cost=cost,
+                next_observation=next_obs,
+                terminal=terminal,
+            )
+        self.terminate_episode()
+
+    def add_sample(self, observation, action, reward, cost, terminal,
                    next_observation, **kwargs):
         # if isinstance(self._action_space, Discrete):
         #     new_action = np.zeros(self._action_dim)
@@ -274,6 +315,7 @@ class EnvReplayBuffer(SimpleReplayBuffer):
             observation=observation,
             action=new_action,
             reward=reward,
+            cost=cost,
             next_observation=next_observation,
             terminal=terminal,
             # **kwargs
@@ -418,6 +460,7 @@ class MDPReplayBuffer(SimpleReplayBuffer):
             actions=actions,
             # prev_actions=self._prev_actions[indices],
             rewards=self._rewards[indices],
+            costs=self._costs[indices],
             terminals=self._terminals[indices],
             next_observations=next_obss,
         )
@@ -455,6 +498,7 @@ class MDPReplayBuffer(SimpleReplayBuffer):
             observations=obss,
             actions=actions,
             # prev_actions=self._prev_actions[indices],
+            costs=self._costs[indices],
             rewards=self._rewards[indices],
             terminals=self._terminals[indices],
             next_observations=next_obss,
@@ -500,7 +544,7 @@ class MDPReplayBuffer(SimpleReplayBuffer):
 
         return batch
 
-    def add_sample(self, observation, action, reward, terminal,
+    def add_sample(self, observation, action, reward, cost, terminal,
                    next_observation, **kwargs):
         # if isinstance(self._action_space, Discrete):
         #     new_action = np.zeros(self._action_dim)
@@ -512,6 +556,7 @@ class MDPReplayBuffer(SimpleReplayBuffer):
             observation=observation,
             action=new_action,
             reward=reward,
+            cost=cost,
             next_observation=next_observation,
             terminal=terminal,
             # **kwargs

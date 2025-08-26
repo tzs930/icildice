@@ -2,7 +2,7 @@ import numpy as np
 import pickle5
 import os
 
-def preprocess_dataset(dataset_path, dataset_types, start_indices, num_rollouts=100):
+def preprocess_dataset(dataset_path, dataset_types, start_indices, num_rollouts):
     
     # e.g. dataset_types = ['safe-expert-v0', 'safe-medium-v0']
     #      dataset
@@ -18,9 +18,7 @@ def preprocess_dataset(dataset_path, dataset_types, start_indices, num_rollouts=
             'episode_indices': []
         }
     
-    rollout_per_dataset = num_rollouts // len(dataset_types)
-
-    for dataset_type, start_idx in zip(dataset_types, start_indices):
+    for dataset_type, start_idx, rollout_per_dataset in zip(dataset_types, start_indices, num_rollouts):
         filepath = f'{dataset_path}/{dataset_type}.pkl'
         
         with open(filepath, 'rb') as f:

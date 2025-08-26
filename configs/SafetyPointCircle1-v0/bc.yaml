@@ -1,0 +1,43 @@
+method: BC
+env_id: SafetyPointCircle1-v0
+device: cuda
+use_wandb: True
+
+wandb:
+  project: 'offline-icil-bctest'
+  entity: 'tzs930'
+
+dataset:
+  dataset_path: 'dataset/SafetyPointCircle1-v0'
+  expert:
+    types:         ['safe-expert-v0', 'unsafe-expert-v0']
+    start_indices: [0, 0]
+    num_trajs:     [1000, 0]
+  safe:
+    types:         []
+    start_indices: []
+    num_trajs:     []
+  mixed:
+    types: []
+    start_indices: []
+    num_trajs: []
+
+replay_buffer:
+  class: 'MDPReplayBuffer'
+  max_replay_buffer_size: 10000000
+  standardize_obs: True
+  standardize_act: False
+
+policy:
+  class: 'GaussianPolicy'
+  layer_sizes: [256, 256]
+
+train:
+  seed: 0
+  gamma: 0.99
+  lr: 3e-5
+  total_iteration: 500000
+  eval_freq: 5000
+  batch_size: 512
+  save_policy_path: results/SafetyPointCircle1-v0/bc
+  num_evals: 10

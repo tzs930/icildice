@@ -20,7 +20,6 @@ from imitation.jointbc import JointBC
 from imitation.demodice import DemoDICESafe
 from imitation.icildice import IcilDICE
 from imitation.icildice_v2 import IcilDICEv2
-from imitation.icildice_v3 import IcilDICEv3
 
 from argparse import ArgumentParser
 from itertools import product
@@ -131,42 +130,22 @@ def train(configs):
             mixed_replay_buffer.set_statistics(obs_mean, obs_std, act_mean, act_std)
     else:
         obs_mean, obs_std, act_mean, act_std = None, None, None, None
-    
-    # Setup Policy
-    if 'GaussianPolicy' == configs['policy']['class']:
+        
+    if 'BC' == configs['method']:
         policy = GaussianPolicy(
-                hidden_sizes=configs['policy']['layer_sizes'],
-                obs_dim=obs_dim,
-                action_dim=action_dim,
-                device=device
-            )
-            
+            hidden_sizes=configs['policy']['layer_sizes'],
+            obs_dim=obs_dim ,
+            action_dim=action_dim,            
+            device=device            
+        )
+        
         best_policy = GaussianPolicy(
             hidden_sizes=configs['policy']['layer_sizes'],
             obs_dim=obs_dim,
-            action_dim=action_dim,
-            device=device
+            action_dim=action_dim,            
+            device=device            
         )
-
-    elif 'TanhGaussianPolicy' == configs['policy']['class']:
-        policy = TanhGaussianPolicy(
-            hidden_sizes=configs['policy']['layer_sizes'],
-            obs_dim=obs_dim,
-            action_dim=action_dim,
-            device=device
-        )
-
-        best_policy = TanhGaussianPolicy(
-            hidden_sizes=configs['policy']['layer_sizes'],
-            obs_dim=obs_dim,
-            action_dim=action_dim,
-            device=device
-        )
-    else:
-        raise NotImplementedError
-    
-    # Setup Trainer and Start Training
-    if 'BC' == configs['method']:
+        
         trainer = BC(
             policy = policy,
             env = env,
@@ -182,7 +161,7 @@ def train(configs):
         
     elif 'JointBC' == configs['method']:
         policy = GaussianPolicy(
-                hidden_sizes=configs['policy']['layer_sizes'],
+            hidden_sizes=configs['policy']['layer_sizes'],
             obs_dim=obs_dim ,
             action_dim=action_dim,            
             device=device            
@@ -210,7 +189,21 @@ def train(configs):
                       batch_size = configs['train']['batch_size'])
     
     elif 'DemoDICESafe' == configs['method']:
+        # raise NotImplementedError
+        policy = GaussianPolicy(
+            hidden_sizes=configs['policy']['layer_sizes'],
+            obs_dim=obs_dim ,
+            action_dim=action_dim,
+            device=device
+        )
         
+        best_policy = GaussianPolicy(
+            hidden_sizes=configs['policy']['layer_sizes'],
+            obs_dim=obs_dim ,
+            action_dim=action_dim,            
+            device=device
+        )
+
         trainer = DemoDICESafe(
             policy = policy,
             best_policy = best_policy,
@@ -224,23 +217,22 @@ def train(configs):
         trainer.train(total_iteration = configs['train']['total_iteration'],
                       eval_freq = configs['train']['eval_freq'],
                       batch_size = configs['train']['batch_size'])
-
-    elif 'IcilDICEv3' == configs['method']:
-        trainer = IcilDICEv3(
-            policy = policy,
-            best_policy = best_policy,
-            env = env,
-            configs = configs,
-            init_obs_buffer = init_obs_buffer,
-            expert_replay_buffer = expert_replay_buffer,
-            safe_replay_buffer = safe_replay_buffer,
-            mixed_replay_buffer = mixed_replay_buffer,
+    
+    elif 'IcilDICEv2' in configs['method']:
+        policy = GaussianPolicy(
+            hidden_sizes=configs['policy']['layer_sizes'],
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            device=device
         )
-        trainer.train(total_iteration = configs['train']['total_iteration'],
-                      eval_freq = configs['train']['eval_freq'],
-                      batch_size = configs['train']['batch_size'])
+        
+        best_policy = GaussianPolicy(
+            hidden_sizes=configs['policy']['layer_sizes'],
+            obs_dim=obs_dim,
+            action_dim=action_dim,            
+            device=device
+        )
 
-    elif 'IcilDICEv2' == configs['method']:
         trainer = IcilDICEv2(
             policy = policy,
             best_policy = best_policy,
@@ -255,8 +247,21 @@ def train(configs):
                       eval_freq = configs['train']['eval_freq'],
                       batch_size = configs['train']['batch_size'])
 
-    elif 'IcilDICE' == configs['method']:
+    elif 'IcilDICE' in configs['method']:
+        policy = GaussianPolicy(
+            hidden_sizes=configs['policy']['layer_sizes'],
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            device=device
+        )
         
+        best_policy = GaussianPolicy(
+            hidden_sizes=configs['policy']['layer_sizes'],
+            obs_dim=obs_dim,
+            action_dim=action_dim,            
+            device=device
+        )
+
         trainer = IcilDICE(
             policy = policy,
             best_policy = best_policy,
@@ -279,12 +284,54 @@ def train(configs):
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--pid", help="process_id", default=0, type=int)
-    parser.add_argument("--config", help="config file", default="configs/SafetyPointCircle1-v0/icildice_v3.yaml")
+    parser.add_argument("--config", help="config file", default="configs/SafetyPointCircle1-v0/icildice_v2.yaml")
     args = parser.parse_args()
     pid = args.pid
 
     configs = yaml.load(open(args.config, 'r'), Loader=yaml.FullLoader)
-    configs['seed'] = pid
+    configs['pid'] = pid
 
-    # print(configs)
+    hp_grids = {
+        "method":                           ["IcilDICEv2-PU"],
+        "dataset/expert/num_trajs":         [[250, 250]], #, [500, 0], [0, 500]],
+        "dataset/safe/num_trajs":           [[250, 250]], #, [500, 0], [0, 500]],
+        "replay_buffer/standardize_obs":    [False],
+        "train/pretrain_steps":             [0, 100000],
+        "train/indicator_weight":           [1.0, 0.0, 10.0, 100.0],
+        "train/uc_disc_gp_weight":          [0, 10.0],
+        "train/nu_gp_weight":               [10.0],
+        "train/uncertainty_threshold_update_freq": [100],
+        "train/uncertainty_safe_quantile":  [0.9, 0.99, 0.999],
+        "train/lambda_starts":              [1.0],
+        "train/lr_lambda":                  [3e-4],
+        # "train/uncertainty_safe_quantile":  [0.95, 0.99],
+        # "train/uncertainty_gp_weight":      [10.],
+        # "train/n_prior_nets":               [2],
+        "train/use_soft_indicator":         [False],
+        "train/seed":                       [0, 1, 2]
+    }    
+    
+    hp_values = list(product(*hp_grids.values()))[pid]
+
+    print(f'** pid: {pid}')
+    for key, value in zip(hp_grids.keys(), hp_values):
+        if 'method' in key:
+            configs['method'] = value
+            print(f'** method: {value}')
+        
+        elif 'dataset' in key:
+            dataset_type = key.split('/')[1]
+            key_ = key.split('/')[2]
+
+            configs['dataset'][dataset_type][key_] = value
+            print(f'** dataset/{dataset_type}/{key_}: {value}')
+        
+        else:
+            key1 = key.split('/')[0]
+            key2 = key.split('/')[1]
+            
+            configs[key1][key2] = value
+            print(f'** {key1}/{key2}: {value}')
+
     train(configs)
+    
