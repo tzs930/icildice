@@ -1,19 +1,19 @@
 import numpy as np
 import random
+import yaml
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import os
-import yaml
 
 # performance_dict = {
 #     'SafetyPointCircle1-v0': {
-#         'cost_threshold': 25.,
 #         'safe_expert_score': 44.30,
 #         'unsafe_expert_score': 54.55,
 #         'random_score': 0., 
+#         'cost_threshold': 25.,
 #     }
 # }
 
@@ -21,48 +21,51 @@ def copy_nn_module(source, target):
     for target_param, param in zip(target.parameters(), source.parameters()):
         target_param.data.copy_(param.data)
 
-
-class DemoDICESafe(nn.Module):
+class BCFiltered(nn.Module):
     def __init__(self, policy, env, configs, best_policy=None,
-                 init_obs_buffer=None, expert_replay_buffer=None, safe_replay_buffer=None, seed=0, 
-                 n_train=1, add_absorbing_state=False):
+                expert_replay_buffer=None, safe_replay_buffer=None, mixed_replay_buffer=None, n_train=1,add_absorbing_state=False):
         
         seed = configs['train']['seed']
         torch.manual_seed(seed)
         np.random.seed(seed)
         random.seed(seed)
         
-        super(DemoDICESafe, self).__init__()
+        super(BCFiltered, self).__init__()
 
         self.env = env
         self.policy = policy
         self.best_policy = best_policy
-
-        self.init_obs_buffer = init_obs_buffer
         self.expert_replay_buffer = expert_replay_buffer
         self.safe_replay_buffer = safe_replay_buffer
+        self.mixed_replay_buffer = mixed_replay_buffer
 
-        self.add_absorbing_state = add_absorbing_state
-        
         self.device = configs['device']
+        self.add_absorbing_state = add_absorbing_state
         
         self.n_train = n_train
     
         self.obs_dim = env.observation_space.low.size
         self.action_dim = env.action_space.low.size
         
-        self.gamma = configs['train']['gamma']
+        self.policy_optimizer = optim.Adam(policy.parameters(), lr=float(configs['train']['lr']))
         
-        self.nu_hidden_size = configs['train']['nu_hidden_size']
-        self.nu_network = nn.Sequential(
-            nn.Linear(self.obs_dim, self.nu_hidden_size[0], device=self.device),
-            nn.ReLU(inplace=True),
-            nn.Linear(self.nu_hidden_size[0], self.nu_hidden_size[1], device=self.device),
-            nn.ReLU(inplace=True),
-            nn.Linear(self.nu_hidden_size[1], 1, device=self.device)
-        )
+        self.num_eval_iteration = configs['train']['num_evals']
+        self.envname = configs['env_id']
+        
+        self.use_wandb = configs['use_wandb']
+        if self.use_wandb:
+            import wandb
+            self.wandb = wandb
+            self.wandb.init(project=configs['wandb']['project'], 
+                            entity=configs['wandb']['entity'], 
+                            config=configs)
+        else:
+            self.wandb = None
+
+        self.save_policy_path = configs['train']['save_policy_path']        
 
         self.disc_hidden_size = configs['train']['disc_hidden_size']
+        self.disc_gp_weight = configs['train']['disc_gp_weight']
         self.disc_network = nn.Sequential(
             nn.Linear(self.obs_dim + self.action_dim, self.disc_hidden_size[0], device=self.device),
             nn.ReLU(inplace=True),
@@ -72,37 +75,20 @@ class DemoDICESafe(nn.Module):
             nn.Sigmoid()
         )
         
-        self.r_fn = \
-            lambda x: - torch.log( 1 / (self.disc_network(x) + 1e-10) - 1 + 1e-10)
-        
-        self.nu_optimizer = optim.Adam(self.nu_network.parameters(), lr=float(configs['train']['lr_nu']))
-        self.disc_optimizer = optim.Adam(self.disc_network.parameters(), lr=float(configs['train']['lr_disc']))
-        self.policy_optimizer = optim.Adam(self.policy.parameters(), lr=float(configs['train']['lr']))
- 
-        self.alpha = float(configs['train']['alpha'])
-        self.disc_steps = int(configs['train']['disc_steps'])
-        self.disc_gp_weight = float(configs['train']['disc_gp_weight'])  # Gradient penalty coefficient
-        self.pretrain_steps = int(configs['train']['pretrain_steps'])
-        self.num_eval_iteration = int(configs['train']['num_evals'])
-        self.envname = configs['env_id']
-        
-        self.use_wandb = bool(configs['use_wandb'])
-        if self.use_wandb:
-            import wandb
-            self.wandb = wandb
-            self.wandb.init(project=configs['wandb']['project'], entity=configs['wandb']['entity'], config=configs)
-        else:
-            self.wandb = None
+        self.uncertainty_threshold = 0.
+        self.disc_quantile = float(configs['train']['disc_quantile']) # e.g. 0.998 Quantile
+        self.threshold_update_freq = int(configs['train']['threshold_update_freq'])
+        self.disc_learning_during_train = configs['train']['disc_learning_during_train']
 
-        self.save_policy_path = configs['train']['save_policy_path']        
+        self.disc_optimizer = optim.Adam(self.disc_network.parameters(), lr=float(configs['train']['lr_disc']))
         
         # For standardization
         self.obs_standardize = configs['replay_buffer']['standardize_obs']
         self.act_standardize = configs['replay_buffer']['standardize_act']
 
         if self.obs_standardize:
-            self.obs_mean = self.replay_buffer.obs_mean
-            self.obs_std = self.replay_buffer.obs_std 
+            self.obs_mean = self.mixed_replay_buffer.obs_mean
+            self.obs_std = self.mixed_replay_buffer.obs_std 
             self.obs_mean_tt = torch.tensor(self.obs_mean, device=self.device)
             self.obs_std_tt = torch.tensor(self.obs_std, device=self.device)
         else:
@@ -112,10 +98,10 @@ class DemoDICESafe(nn.Module):
             self.obs_std_tt = None
             
         if self.act_standardize:
-            self.act_mean = self.replay_buffer.act_mean
-            self.act_std = self.replay_buffer.act_std
-            self.act_mean_tt = torch.tensor(self.replay_buffer.act_mean, device=self.device)
-            self.act_std_tt = torch.tensor(self.replay_buffer.act_std, device=self.device)
+            self.act_mean = self.mixed_replay_buffer.act_mean
+            self.act_std = self.mixed_replay_buffer.act_std
+            self.act_mean_tt = torch.tensor(self.mixed_replay_buffer.act_mean, device=self.device)
+            self.act_std_tt = torch.tensor(self.mixed_replay_buffer.act_std, device=self.device)
         else:
             self.act_mean = None
             self.act_std = None
@@ -130,7 +116,7 @@ class DemoDICESafe(nn.Module):
             # self.cost_threshold = safe_expert_stats['cost_threshold']
         except:
             self.max_score = None
-            
+
         self.cost_threshold = 25.
 
         try:
@@ -142,7 +128,6 @@ class DemoDICESafe(nn.Module):
             self.min_score = None
         
         print(f'** max_score: {self.max_score}, cost_threshold: {self.cost_threshold}, min_score: {self.min_score}')
-
 
     def calculate_gradient_penalty(self, network, expert_s_a, mixed_s_a):
         # Add gradient penalty term
@@ -172,131 +157,91 @@ class DemoDICESafe(nn.Module):
         gradient_penalty = ((gradients.norm(2, dim=-1) - 1) ** 2).mean()
 
         return gradient_penalty
-
+    
     def train(self, total_iteration=1e6, eval_freq=1000, batch_size=1024):
+        
         max_score = -100000.
 
-        for num in range(0, int(self.pretrain_steps)):
-            self.disc_optimizer.zero_grad()
-            expert_batch = self.expert_replay_buffer.random_batch(batch_size, standardize=self.obs_standardize)
-            safe_batch = self.safe_replay_buffer.random_batch(batch_size, standardize=self.obs_standardize)
+        safe_n = self.safe_replay_buffer._size
+        safe_obs_total = torch.tensor(self.safe_replay_buffer._observations[:safe_n], dtype=torch.float32, device=self.device)
+        safe_actions_total = torch.tensor(self.safe_replay_buffer._actions[:safe_n], dtype=torch.float32, device=self.device)
+        safe_s_a_total = torch.cat([safe_obs_total, safe_actions_total], dim=-1)
 
-            expert_obs = torch.tensor(expert_batch['observations'], dtype=torch.float32, device=self.device)
-            expert_actions = torch.tensor(expert_batch['actions'], dtype=torch.float32, device=self.device)
+        safe_disc_total = self.disc_network(safe_s_a_total).reshape(-1).cpu().detach().numpy()
+        safe_disc_threshold = np.quantile(safe_disc_total, 1 - self.disc_quantile)
+        self.uncertainty_threshold = safe_disc_threshold
+        
+        for num in range(0, int(total_iteration)+1):
+            self.disc_optimizer.zero_grad()
+                    
+            safe_batch = self.safe_replay_buffer.random_batch(batch_size, standardize=self.obs_standardize)
+            mixed_batch = self.mixed_replay_buffer.random_batch(batch_size, standardize=self.obs_standardize)
 
             safe_obs = torch.tensor(safe_batch['observations'], dtype=torch.float32, device=self.device)
             safe_actions = torch.tensor(safe_batch['actions'], dtype=torch.float32, device=self.device)
+            
+            mixed_obs = torch.tensor(mixed_batch['observations'], dtype=torch.float32, device=self.device)
+            mixed_actions = torch.tensor(mixed_batch['actions'], dtype=torch.float32, device=self.device)
 
-            expert_s_a = torch.cat([expert_obs, expert_actions], dim=-1)
             safe_s_a = torch.cat([safe_obs, safe_actions], dim=-1)
+            mixed_s_a = torch.cat([mixed_obs, mixed_actions], dim=-1)
 
-            expert_disc = self.disc_network(expert_s_a)
             safe_disc = self.disc_network(safe_s_a)
+            mixed_disc = self.disc_network(mixed_s_a)
 
-            disc_loss = -torch.log(expert_disc + 1e-10).mean() - torch.log(1 - safe_disc + 1e-10).mean()
+            disc_loss = -torch.log(safe_disc + 1e-10).mean() - torch.log(1 - mixed_disc + 1e-10).mean()
             
             # Add gradient penalty term
             if self.disc_gp_weight > 0:
-                gradient_penalty = self.calculate_gradient_penalty(self.disc_network, expert_s_a, safe_s_a)
-                disc_loss += self.disc_gp_weight * gradient_penalty
+                randperm = torch.randperm(batch_size)
+                self.current_disc_gradient_penalty = self.calculate_gradient_penalty(self.disc_network, mixed_s_a, mixed_s_a[randperm], type='disc')
+                disc_loss += self.disc_gp_weight * self.current_disc_gradient_penalty
             else:
-                gradient_penalty = 0.
-            self.current_gradient_penalty = gradient_penalty                
+                self.current_disc_gradient_penalty = 0.
 
             disc_loss.backward()
             self.disc_optimizer.step()
-        
-        for num in range(0, int(total_iteration)+1):
-            for _ in range(self.disc_steps):
-                self.disc_optimizer.zero_grad()
-                expert_batch = self.expert_replay_buffer.random_batch(batch_size, standardize=self.obs_standardize)
-            
-                safe_batch = self.safe_replay_buffer.random_batch(batch_size, standardize=self.obs_standardize)
 
-                expert_obs = torch.tensor(expert_batch['observations'], dtype=torch.float32, device=self.device)
-                expert_actions = torch.tensor(expert_batch['actions'], dtype=torch.float32, device=self.device)
-
-                safe_obs = torch.tensor(safe_batch['observations'], dtype=torch.float32, device=self.device)
-                safe_actions = torch.tensor(safe_batch['actions'], dtype=torch.float32, device=self.device)
-
-                expert_s_a = torch.cat([expert_obs, expert_actions], dim=-1)
-                safe_s_a = torch.cat([safe_obs, safe_actions], dim=-1)
-
-                expert_disc = self.disc_network(expert_s_a)
-                safe_disc = self.disc_network(safe_s_a)
-
-                disc_loss = -torch.log(expert_disc + 1e-10).mean() - torch.log(1 - safe_disc + 1e-10).mean()
-                
-                # Add gradient penalty term
-                if self.disc_gp_weight > 0:
-                    gradient_penalty = self.calculate_gradient_penalty(self.disc_network, expert_s_a, safe_s_a)
-                    disc_loss += self.disc_gp_weight * gradient_penalty
-                else:
-                    gradient_penalty = 0.                
-                self.current_gradient_penalty = gradient_penalty
-
-                disc_loss.backward()
-                self.disc_optimizer.step()
-
-           
-            self.nu_optimizer.zero_grad()
-
-            init_obs = self.init_obs_buffer.random_batch(batch_size, standardize=self.obs_standardize)
             expert_batch = self.expert_replay_buffer.random_batch(batch_size, standardize=self.obs_standardize)
-            safe_batch = self.safe_replay_buffer.random_batch(batch_size, standardize=self.obs_standardize)
-
-            # nu (lagrangian) training
-            init_obs = torch.tensor(init_obs, dtype=torch.float32, device=self.device)
-            safe_obs = torch.tensor(safe_batch['observations'], dtype=torch.float32, device=self.device)
-            safe_actions = torch.tensor(safe_batch['actions'], dtype=torch.float32, device=self.device)
-            safe_next_obs = torch.tensor(safe_batch['next_observations'], dtype=torch.float32, device=self.device)
-
-            safe_s_a = torch.cat([safe_obs, safe_actions], dim=-1)
-            safe_r = self.r_fn(safe_s_a).reshape(-1)
-
-            init_nu = self.nu_network(init_obs).reshape(-1)
-            safe_nu = self.nu_network(safe_obs).reshape(-1)
-            safe_nu_prime = self.nu_network(safe_next_obs).reshape(-1)
-
-            safe_adv = safe_r.detach() + self.gamma * safe_nu_prime - safe_nu
-            nu_loss0 = (1 - self.gamma) * init_nu.mean()
-            nu_loss1 = (1 + self.alpha) * torch.logsumexp(safe_adv / (1+self.alpha), -1) #.mean()
-
-            nu_loss = nu_loss0 + nu_loss1
-
-            self.nu_optimizer.zero_grad()
-            nu_loss.backward()
-            self.nu_optimizer.step()
-
-            # Policy training (weighted BC)
-            self.policy_optimizer.zero_grad()
-
-            # weights corresponds to KL (with reweighting)
-            policy_weight = torch.exp( (safe_nu - safe_nu.max()) / (self.alpha + 1) )
-            policy_weight = (policy_weight / policy_weight.sum()).detach()
-            policy_loss = - (policy_weight * self.policy.log_prob(safe_obs, safe_actions)).mean()
-
-            policy_loss.backward()
-            self.policy_optimizer.step()
             
+            expert_obs = torch.tensor(expert_batch['observations'], dtype=torch.float32, device=self.device)
+            expert_actions = torch.tensor(expert_batch['actions'], dtype=torch.float32, device=self.device)
+
+            expert_s_a = torch.cat([expert_obs, expert_actions], dim=-1)
+
+            expert_disc = self.disc_network(expert_s_a)
+            expert_safe_indicator = (expert_disc > self.uncertainty_threshold).reshape(-1).detach().float()
+
+            train_loss = torch.mean(expert_safe_indicator * -self.policy.log_prob(expert_obs, expert_actions))
+            
+            self.policy_optimizer.zero_grad()
+            train_loss.backward()
+            self.policy_optimizer.step()
+
+            if (num) % self.threshold_update_freq == 0  and self.disc_learning_during_train:
+                safe_disc_total = self.disc_network(safe_s_a_total).reshape(-1).cpu().detach().numpy()
+                safe_disc_threshold = np.quantile(safe_disc_total, 1 - self.disc_quantile)
+                self.uncertainty_threshold = safe_disc_threshold
+
             if (num) % eval_freq == 0:
                 self.policy.eval()
                 eval_ret_mean, eval_ret_std, eval_cost_mean, eval_cost_std, eval_violation_rate, eval_length_mean, eval_feasible_ret_mean, eval_feasible_ret_std = \
                     self.evaluate(self.env, self.policy, num_evaluation=self.num_eval_iteration)
+
+                print(f'** iter{num}: policy_loss={train_loss.item():.2f}, ret={eval_ret_mean:.2f}+-{eval_ret_std:.2f}, cost={eval_cost_mean:.2f}+-{eval_cost_std:.2f}, violation_rate={eval_violation_rate:.2f}, length={eval_length_mean:.2f}')
                 
-                print(f'** iter{num}: policy_loss={policy_loss.item():.2f}, ret={eval_ret_mean:.2f}+-{eval_ret_std:.2f}, cost={eval_cost_mean:.2f}+-{eval_cost_std:.2f}, violation_rate={eval_violation_rate:.2f}, length={eval_length_mean:.2f}')
-                
+                num_nonzero_samples = expert_safe_indicator.sum().item()
+
                 if self.use_wandb:
-                    self.wandb.log({'train/policy_loss':       policy_loss.item(), 
-                                    'train/nu_loss':           nu_loss.item(),
-                                    'train/disc_loss':         disc_loss.item(),
-                                    'train/disc_gradient_penalty':  self.current_gradient_penalty,
-                                    'eval/episode_return':     eval_ret_mean,
-                                    'eval/episode_cost':       eval_cost_mean,
-                                    'eval/violation_rate':     eval_violation_rate,
-                                    'eval/episode_length':     eval_length_mean,
-                                    'eval/feasible_return':     eval_feasible_ret_mean,
-                                    'eval/feasible_return_std': eval_feasible_ret_std,
+                    self.wandb.log({'train/policy_loss':       train_loss.item(), 
+                               'eval/episode_return':      eval_ret_mean,
+                               'eval/episode_cost':        eval_cost_mean,
+                               'eval/violation_rate':      eval_violation_rate,
+                               'eval/episode_length':      eval_length_mean,
+                               'eval/feasible_return':     eval_feasible_ret_mean,
+                               'eval/feasible_return_std': eval_feasible_ret_std,
+                               'eval/disc_threshold': self.uncertainty_threshold,
+                               'eval/num_nonzero_samples': num_nonzero_samples,
                                }, step=num+1)
 
                 if eval_ret_mean > max_score:
@@ -315,18 +260,7 @@ class DemoDICESafe(nn.Module):
             torch.save(self.policy.state_dict(), 
                     f'{self.save_policy_path}/bc_actor_last.pt')
                     
-        if self.save_policy_path:
-            print(f'** save model to ', f'{self.save_policy_path}/bc_actor_best.pt')
-            os.makedirs(self.save_policy_path, exist_ok=True)
-            torch.save(self.best_policy.state_dict(), 
-                    f'{self.save_policy_path}/bc_actor_best.pt')
-            
-            print(f'** save model to ', f'{self.save_policy_path}/bc_actor_last.pt')
-            os.makedirs(self.save_policy_path, exist_ok=True)
-            torch.save(self.policy.state_dict(), 
-                    f'{self.save_policy_path}/bc_actor_last.pt')
-    
-                   
+                    
     def evaluate(self, env, policy, num_evaluation=5, deterministic=True):
         rets = []
         costs = []

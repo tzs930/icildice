@@ -1,10 +1,10 @@
-method: DemoDICESafe
+method: DemoDICEReg
 env_id: SafetyPointCircle1-v0
 device: cuda
-use_wandb: True
+use_wandb: False
 
 wandb:
-  project: 'offline-icil-250826'
+  project: 'offline-icil-250826-regtest'
   entity: 'tzs930'
 
 dataset:
@@ -12,15 +12,15 @@ dataset:
   expert:
     types: ['safe-expert-v0', 'unsafe-expert-v0'] #, 'safe-expert-v0']
     start_indices: [0, 0] #, 0]
-    num_trajs: [50, 50]
+    num_trajs: [10, 10]
   safe:
     types: ['safe-expert-v0', 'safe-medium-v0']
     start_indices: [250, 0]
-    num_trajs: [500, 500]
+    num_trajs: [250, 250]
   mixed:
-    types: []
-    start_indices: []
-    num_trajs: null
+    types: ['safe-expert-v0', 'safe-medium-v0', 'unsafe-expert-v0', 'unsafe-medium-v0']
+    start_indices: [500, 500, 500, 500]
+    num_trajs:     [500, 500, 500, 500]
 
 replay_buffer:
   class: 'MDPReplayBuffer'
@@ -45,7 +45,7 @@ train:
   disc_steps: 1
   nu_hidden_size: [256, 256]
   disc_hidden_size: [256, 256]
-  total_iteration: 500000
+  total_iteration: 1000000
   eval_freq: 10000
   batch_size: 512
   save_policy_path: null

@@ -1,5 +1,6 @@
 import numpy as np
 import random
+import yaml
 
 import torch
 import torch.nn as nn
@@ -7,14 +8,14 @@ import torch.optim as optim
 import torch.nn.functional as F
 import os
 
-performance_dict = {
-    'SafetyPointCircle1-v0': {
-        'safe_expert_score': 44.30,
-        'unsafe_expert_score': 54.55,
-        'random_score': 0., 
-        'cost_threshold': 25.,
-    }
-}
+# performance_dict = {
+#     'SafetyPointCircle1-v0': {
+#         'safe_expert_score': 44.30,
+#         'unsafe_expert_score': 54.55,
+#         'random_score': 0., 
+#         'cost_threshold': 25.,
+#     }
+# }
 
 def copy_nn_module(source, target):
     for target_param, param in zip(target.parameters(), source.parameters()):
@@ -87,6 +88,27 @@ class BC(nn.Module):
             self.act_mean_tt = None
             self.act_std_tt = None
 
+        try:
+            safe_expert_file_stats = f'dataset/{self.envname}/stats/safe-expert-v0-stats.yaml'
+            with open(safe_expert_file_stats, 'r') as f:
+                safe_expert_stats = yaml.safe_load(f)
+            self.max_score = safe_expert_stats['average_return']
+            # self.cost_threshold = safe_expert_stats['cost_threshold']
+        except:
+            self.max_score = None
+
+        self.cost_threshold = 25.
+
+        try:
+            random_file_stats = f'dataset/{self.envname}/stats/random-v0-stats.yaml'
+            with open(random_file_stats, 'r') as f:
+                random_stats = yaml.safe_load(f)
+            self.min_score = random_stats['average_return']
+        except:
+            self.min_score = None
+        
+        print(f'** max_score: {self.max_score}, cost_threshold: {self.cost_threshold}, min_score: {self.min_score}')
+
 
     def train(self, total_iteration=1e6, eval_freq=1000, batch_size=1024):
         
@@ -147,9 +169,12 @@ class BC(nn.Module):
         costs = []
         lengths = []
         rets_until_violation = []
-        cost_threshold = performance_dict[env.spec.id]['cost_threshold']
-        max_score = performance_dict[env.spec.id]['safe_expert_score']
-        min_score = performance_dict[env.spec.id]['random_score']
+        # cost_threshold = performance_dict[env.spec.id]['cost_threshold']
+        # max_score = performance_dict[env.spec.id]['safe_expert_score']
+        # min_score = performance_dict[env.spec.id]['random_score']
+        cost_threshold = self.cost_threshold
+        max_score = self.max_score
+        min_score = self.min_score
 
         # maxtimestep = 1000
         for num in range(0, num_evaluation):
@@ -191,9 +216,13 @@ class BC(nn.Module):
                 done = terminate or truncated
                     
                 t += 1
-            
-            normalized_ret = (ret - min_score) / (max_score - min_score) * 100.
-            normalized_ret_until_violation = (ret_until_violation - min_score) / (max_score - min_score) * 100.
+
+            if max_score is not None and min_score is not None:
+                normalized_ret = (ret - min_score) / (max_score - min_score) * 100.
+                normalized_ret_until_violation = (ret_until_violation - min_score) / (max_score - min_score) * 100.
+            else:
+                normalized_ret = ret
+                normalized_ret_until_violation = ret_until_violation
 
             rets.append(normalized_ret)
             costs.append(cum_cost)

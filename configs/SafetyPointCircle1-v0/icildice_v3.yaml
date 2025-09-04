@@ -1,10 +1,10 @@
-method: IcilDICEv3
+method: IcilDICEv3-fixbug
 env_id: SafetyPointCircle1-v0
 device: cuda
 use_wandb: True #True
 
 wandb:
-  project: 'offline-icil-250826'
+  project: 'offline-icil-diverse-envs'
   entity: 'tzs930'
 
 dataset:
@@ -15,7 +15,7 @@ dataset:
     num_trajs:     [250, 250]
   safe:
     types: ['safe-expert-v0', 'safe-medium-v0']
-    start_indices: [500, 0]
+    start_indices: [250, 0]
     num_trajs:     [250, 250]
   mixed:
     types: ['safe-expert-v0', 'safe-medium-v0', 'unsafe-expert-v0', 'unsafe-medium-v0']
@@ -36,11 +36,11 @@ train:
   seed: 0
   gamma: 0.99
   alpha: 0. # Dataset Regularization Coefficient
-  lr: 3e-4
-  lr_nu: 3e-4
-  lr_disc: 3e-4
-  lr_prior: 3e-4
-  lr_lambda: 3e-4
+  lr: 3e-5
+  lr_nu: 3e-5
+  lr_disc: 3e-5
+  lr_prior: 3e-5
+  lr_lambda: 3e-5
   nu_hidden_size: [256, 256]
   nu_gp_weight: 10.0
   disc_hidden_size: [256, 256]
@@ -48,21 +48,22 @@ train:
   disc_steps: 1
   uc_disc_hidden_size: [256, 256]
   uc_disc_gp_weight: 10.0
-  total_iteration: 1000000
+  total_iteration: 500000
   eval_freq: 10000
   batch_size: 512
   save_policy_path: null
-  num_evals: 10
-  pretrain_steps: 0
+  num_evals: 50
   n_prior_nets: 2
   prior_output_size: 10
   prior_net_size: [64, 64]
   fittor_net_size: [256, 256] # More larger
   uncertainty_safe_quantile: 0.99
   uncertainty_threshold_update_freq: 100
-  uncertainty_gp_weight: 10.0
+  uncertainty_gp_weight: 0.0
   indicator_weight: 1.0
   lambda_starts: 1.0
   use_soft_indicator: False
   class_prior: 0.5
-  # prior_learning_during_train: False
+  pretrain_steps: 0
+  prior_learning_during_train: True
+  beta: 1.0

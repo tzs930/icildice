@@ -1,7 +1,7 @@
-method: BC
+method: BCJointFiltered
 env_id: SafetyPointCircle1-v0
 device: cuda
-use_wandb: True
+use_wandb: False
 
 wandb:
   project: 'offline-icil-bctest'
@@ -12,20 +12,20 @@ dataset:
   expert:
     types:         ['safe-expert-v0', 'unsafe-expert-v0']
     start_indices: [0, 0]
-    num_trajs:     [250, 0]
+    num_trajs:     [5, 5]
   safe:
-    types:         []
-    start_indices: []
-    num_trajs:     []
+    types:         ['safe-expert-v0', 'safe-medium-v0']
+    start_indices: [250, 0]
+    num_trajs:     [5,   5]
   mixed:
-    types: []
-    start_indices: []
-    num_trajs: []
+    types: ['safe-expert-v0', 'safe-medium-v0', 'unsafe-expert-v0', 'unsafe-medium-v0']
+    start_indices: [500, 500, 500, 500]
+    num_trajs:     [500, 500, 500, 500]
 
 replay_buffer:
   class: 'MDPReplayBuffer'
   max_replay_buffer_size: 10000000
-  standardize_obs: True
+  standardize_obs: False
   standardize_act: False
 
 policy:
@@ -36,8 +36,15 @@ train:
   seed: 0
   gamma: 0.99
   lr: 3e-5
-  total_iteration: 500000
+  lr_disc: 3e-5
+  total_iteration: 1000000
   eval_freq: 5000
   batch_size: 512
   save_policy_path: results/SafetyPointCircle1-v0/bc
   num_evals: 10
+  disc_gp_weight: 0.0
+  disc_hidden_size: [256, 256]
+  disc_quantile: 0.99
+  threshold_update_freq: 100
+  disc_learning_during_train: True
+  

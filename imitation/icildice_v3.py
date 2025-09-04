@@ -7,14 +7,16 @@ import torch.optim as optim
 import torch.nn.functional as F
 import os
 
-performance_dict = {
-    'SafetyPointCircle1-v0': {
-        'safe_expert_score': 44.30,
-        'unsafe_expert_score': 54.55,
-        'random_score': 0., 
-        'cost_threshold': 25.,
-    }
-}
+import yaml
+
+# performance_dict = {
+#     'SafetyPointCircle1-v0': {
+#         'safe_expert_score': 44.30,
+#         'unsafe_expert_score': 54.55,
+#         'random_score': 0., 
+#         'cost_threshold': 25.,
+#     }
+# }
 
 def copy_nn_module(source, target):
     for target_param, param in zip(target.parameters(), source.parameters()):
@@ -74,6 +76,7 @@ class IcilDICEv3(nn.Module):
         )
 
         self.use_soft_indicator = bool(configs['train']['use_soft_indicator'])
+        self.beta = float(configs['train']['beta'])
         self.lambda_ = nn.Parameter(torch.tensor(configs['train']['lambda_starts'], device=self.device))
         # self.lambda_ = torch.exp(self.lambda_param)
 
@@ -111,7 +114,7 @@ class IcilDICEv3(nn.Module):
         self.uc_disc_gp_weight = float(configs['train']['uc_disc_gp_weight'])
         
         self.indicator_weight = float(configs['train']['indicator_weight'])
-        # self.prior_learning_during_train = bool(configs['train']['prior_learning_during_train'])
+        self.prior_learning_during_train = bool(configs['train']['prior_learning_during_train'])
         
         self.num_eval_iteration = int(configs['train']['num_evals'])
         self.envname = configs['env_id']
@@ -151,6 +154,27 @@ class IcilDICEv3(nn.Module):
             self.act_std = None
             self.act_mean_tt = None
             self.act_std_tt = None
+
+        try:
+            safe_expert_file_stats = f'dataset/{self.envname}/stats/safe-expert-v0-stats.yaml'
+            with open(safe_expert_file_stats, 'r') as f:
+                safe_expert_stats = yaml.safe_load(f)
+            self.max_score = safe_expert_stats['average_return']
+            # self.cost_threshold = safe_expert_stats['cost_threshold']
+        except:
+            self.max_score = None
+
+        self.cost_threshold = 25.
+
+        try:
+            random_file_stats = f'dataset/{self.envname}/stats/random-v0-stats.yaml'
+            with open(random_file_stats, 'r') as f:
+                random_stats = yaml.safe_load(f)
+            self.min_score = random_stats['average_return']
+        except:
+            self.min_score = None
+
+        print(f'** max_score: {self.max_score}, cost_threshold: {self.cost_threshold}, min_score: {self.min_score}')
 
     def calculate_gradient_penalty(self, network, expert_s_a, mixed_s_a, type='disc'):
     # Add gradient penalty term
@@ -247,13 +271,13 @@ class IcilDICEv3(nn.Module):
             safe_s_a = torch.cat([safe_obs, safe_actions], dim=-1)
 
             safe_disc = self.uc_disc_network(safe_s_a)
-            safe_disc_loss = -torch.log(safe_disc + 1e-10).mean() * self.class_prior
-
             mixed_disc = self.uc_disc_network(mixed_s_a)
-            mixed_disc_loss = -torch.log(1 - mixed_disc + 1e-10).mean()
-            mixed_disc_loss += (- self.class_prior) * (-torch.log(1 - safe_disc + 1e-10).mean())
-            
-            uc_disc_loss = safe_disc_loss + mixed_disc_loss
+
+            # safe_disc_loss = -torch.log(safe_disc + 1e-10).mean() * self.class_prior
+            # mixed_disc_loss = -torch.log(1 - mixed_disc + 1e-10).mean()
+            # mixed_disc_loss += (- self.class_prior) * (-torch.log(1 - safe_disc + 1e-10).mean())
+            # uc_disc_loss = safe_disc_loss + mixed_disc_loss
+            uc_disc_loss = -torch.log(safe_disc + 1e-10).mean() - torch.log(1 - mixed_disc + 1e-10).mean()
 
             if self.uc_disc_gp_weight > 0:
                 self.current_uc_gradient_penalty = self.calculate_gradient_penalty(self.uc_disc_network, safe_s_a, mixed_s_a, type='disc')
@@ -264,60 +288,69 @@ class IcilDICEv3(nn.Module):
             uc_disc_loss.backward()
             self.uc_disc_optimizer.step()
 
+            if num % 10000 == 0:
+                print(f'** pretrain iteration: {num}, disc loss: {disc_loss.item():.4f}, uc disc loss: {uc_disc_loss.item():.4f}')
+
         safe_disc_total = self.uc_disc_network(safe_s_a_total).reshape(-1).cpu().detach().numpy()
         safe_disc_threshold = np.quantile(safe_disc_total, 1 - self.uncertainty_safe_quantile)
         self.uncertainty_threshold = safe_disc_threshold
              
         for num in range(0, int(total_iteration)+1):
-            for _ in range(self.disc_steps):
-                self.disc_optimizer.zero_grad()
-                
-                expert_batch = self.expert_replay_buffer.random_batch(batch_size, standardize=self.obs_standardize)
-                mixed_batch = self.mixed_replay_buffer.random_batch(batch_size, standardize=self.obs_standardize)
-                
-                expert_obs = torch.tensor(expert_batch['observations'], dtype=torch.float32, device=self.device)
-                expert_actions = torch.tensor(expert_batch['actions'], dtype=torch.float32, device=self.device)
-
-                mixed_obs = torch.tensor(mixed_batch['observations'], dtype=torch.float32, device=self.device)
-                mixed_actions = torch.tensor(mixed_batch['actions'], dtype=torch.float32, device=self.device)
-
-                expert_s_a = torch.cat([expert_obs, expert_actions], dim=-1)
-                mixed_s_a = torch.cat([mixed_obs, mixed_actions], dim=-1)
-
-                expert_disc = self.disc_network(expert_s_a)
-                mixed_disc = self.disc_network(mixed_s_a)
-
-                disc_loss = -torch.log(expert_disc + 1e-10).mean() - torch.log(1 - mixed_disc + 1e-10).mean()
-                
-                # Add gradient penalty term
-                if self.disc_gp_weight > 0:
-                    randperm = torch.randperm(batch_size)
-                    self.current_disc_gradient_penalty = self.calculate_gradient_penalty(self.disc_network, mixed_s_a, mixed_s_a[randperm], type='disc')
-                    disc_loss += self.disc_gp_weight * self.current_disc_gradient_penalty
-                else:
-                    self.current_disc_gradient_penalty = 0.
-
-                disc_loss.backward()
-                self.disc_optimizer.step()
-
-                self.uc_disc_optimizer.zero_grad()
+            if self.prior_learning_during_train:
+                for _ in range(self.disc_steps):
+                    self.disc_optimizer.zero_grad()
                     
-                safe_disc = self.uc_disc_network(safe_s_a)
-                mixed_disc = self.uc_disc_network(mixed_s_a)
+                    expert_batch = self.expert_replay_buffer.random_batch(batch_size, standardize=self.obs_standardize)
+                    mixed_batch = self.mixed_replay_buffer.random_batch(batch_size, standardize=self.obs_standardize)
+                    
+                    expert_obs = torch.tensor(expert_batch['observations'], dtype=torch.float32, device=self.device)
+                    expert_actions = torch.tensor(expert_batch['actions'], dtype=torch.float32, device=self.device)
 
-                uc_disc_loss = self.class_prior * (-torch.log(safe_disc + 1e-10).mean())
-                uc_disc_loss += (-torch.log(1 - mixed_disc + 1e-10).mean())
-                uc_disc_loss += (- self.class_prior) * (-torch.log(1 - safe_disc + 1e-10).mean())
+                    mixed_obs = torch.tensor(mixed_batch['observations'], dtype=torch.float32, device=self.device)
+                    mixed_actions = torch.tensor(mixed_batch['actions'], dtype=torch.float32, device=self.device)
 
-                if self.uc_disc_gp_weight > 0:
-                    randperm = torch.randperm(batch_size)
-                    self.current_uc_gradient_penalty = self.calculate_gradient_penalty(self.uc_disc_network, mixed_s_a, mixed_s_a[randperm], type='disc')
-                    uc_disc_loss += self.uc_disc_gp_weight * self.current_uc_gradient_penalty
-                else:
-                    self.current_uc_gradient_penalty = 0.
+                    expert_s_a = torch.cat([expert_obs, expert_actions], dim=-1)
+                    mixed_s_a = torch.cat([mixed_obs, mixed_actions], dim=-1)
 
-                uc_disc_loss.backward()
-                self.uc_disc_optimizer.step()
+                    expert_disc = self.disc_network(expert_s_a)
+                    mixed_disc = self.disc_network(mixed_s_a)
+
+                    disc_loss = -torch.log(expert_disc + 1e-10).mean() - torch.log(1 - mixed_disc + 1e-10).mean()
+                    
+                    # Add gradient penalty term
+                    if self.disc_gp_weight > 0:
+                        randperm = torch.randperm(batch_size)
+                        self.current_disc_gradient_penalty = self.calculate_gradient_penalty(self.disc_network, mixed_s_a, mixed_s_a[randperm], type='disc')
+                        disc_loss += self.disc_gp_weight * self.current_disc_gradient_penalty
+                    else:
+                        self.current_disc_gradient_penalty = 0.
+
+                    disc_loss.backward()
+                    self.disc_optimizer.step()
+
+                    self.uc_disc_optimizer.zero_grad()
+                    safe_batch = self.safe_replay_buffer.random_batch(batch_size, standardize=self.obs_standardize)
+                    safe_obs = torch.tensor(safe_batch['observations'], dtype=torch.float32, device=self.device)
+                    safe_actions = torch.tensor(safe_batch['actions'], dtype=torch.float32, device=self.device)
+                    safe_s_a = torch.cat([safe_obs, safe_actions], dim=-1)
+                        
+                    safe_disc = self.uc_disc_network(safe_s_a)
+                    mixed_disc = self.uc_disc_network(mixed_s_a)
+
+                    # uc_disc_loss = self.class_prior * (-torch.log(safe_disc + 1e-10).mean())
+                    # uc_disc_loss += (-torch.log(1 - mixed_disc + 1e-10).mean())
+                    # uc_disc_loss += (- self.class_prior) * (-torch.log(1 - safe_disc + 1e-10).mean())
+                    uc_disc_loss = -torch.log(safe_disc + 1e-10).mean() - torch.log(1 - mixed_disc + 1e-10).mean()
+
+                    if self.uc_disc_gp_weight > 0:
+                        randperm = torch.randperm(batch_size)
+                        self.current_uc_gradient_penalty = self.calculate_gradient_penalty(self.uc_disc_network, mixed_s_a, mixed_s_a[randperm], type='disc')
+                        uc_disc_loss += self.uc_disc_gp_weight * self.current_uc_gradient_penalty
+                    else:
+                        self.current_uc_gradient_penalty = 0.
+
+                    uc_disc_loss.backward()
+                    self.uc_disc_optimizer.step()
 
             self.nu_optimizer.zero_grad()
             self.lambda_optimizer.zero_grad()
@@ -341,16 +374,17 @@ class IcilDICEv3(nn.Module):
                 mixed_safe_indicator = self.uc_disc_network(mixed_s_a).reshape(-1).detach()
             else:
                 mixed_disc = self.uc_disc_network(mixed_s_a)
-                mixed_safe_indicator = (mixed_disc > self.uncertainty_threshold).reshape(-1).detach() #.float()
+                mixed_safe_indicator = (mixed_disc > self.uncertainty_threshold).reshape(-1).detach().float()
 
             init_nu = self.nu_network(init_obs).reshape(-1)
             mixed_nu = self.nu_network(mixed_obs).reshape(-1)
             mixed_nu_prime = self.nu_network(mixed_next_obs).reshape(-1)
 
-            mixed_adv = mixed_r + self.lambda_ * self.indicator_weight * mixed_safe_indicator + self.gamma * mixed_nu_prime - mixed_nu
+            mixed_adv = mixed_r + self.lambda_ * self.indicator_weight * mixed_safe_indicator - self.beta * (1. - mixed_safe_indicator) + self.gamma * mixed_nu_prime - mixed_nu
+
             nu_loss0 = (1 - self.gamma) * init_nu.mean()
-            # nu_loss1 = (1 + self.alpha) * torch.logsumexp(mixed_adv / (1 + self.alpha), -1) #.mean()
-            nu_loss1 = (1+ self.alpha) * torch.exp(mixed_adv / (1 + self.alpha) - 1).mean()
+            nu_loss1 = (1 + self.alpha) * torch.logsumexp(mixed_adv / (1 + self.alpha), -1) #.mean()
+            # nu_loss1 = (1+ self.alpha) * torch.exp(mixed_adv / (1 + self.alpha) - 1).mean()
 
             nu_loss = nu_loss0 + nu_loss1 - self.lambda_
 
@@ -367,14 +401,16 @@ class IcilDICEv3(nn.Module):
 
             # Policy training (weighted BC)
             # weights corresponds to KL (with reweighting)
-            policy_weight = torch.exp( (mixed_nu - mixed_nu.max()) / (self.alpha + 1) - 1 )
-            policy_weight = (policy_weight / policy_weight.sum()).detach()
+            # Use logsumexp trick for numerical stability
+            log_weights = (mixed_adv) / (self.alpha + 1) - 1
+            log_weights_normalized = log_weights - torch.logsumexp(log_weights, dim=0)
+            policy_weight = torch.exp(log_weights_normalized).detach()
             policy_loss = - (policy_weight * self.policy.log_prob(mixed_obs, mixed_actions)).mean()
 
             policy_loss.backward()
             self.policy_optimizer.step()
 
-            if (num) % self.uncertainty_threshold_update_freq == 0:
+            if (num) % self.uncertainty_threshold_update_freq == 0  and self.prior_learning_during_train:
                 safe_disc_total = self.uc_disc_network(safe_s_a_total).reshape(-1).cpu().detach().numpy()
                 safe_disc_threshold = np.quantile(safe_disc_total, 1 - self.uncertainty_safe_quantile)
                 self.uncertainty_threshold = safe_disc_threshold
@@ -391,6 +427,11 @@ class IcilDICEv3(nn.Module):
                 # mixed_uncertainties = mixed_uncertainties.cpu().detach().numpy()
                 # mixed_uncertainties = np.maximum(0, mixed_uncertainties)
                 mixed_num_oods = batch_size - torch.sum(mixed_safe_indicator).item()
+
+                mean_weight = torch.mean(policy_weight).detach().cpu().numpy()
+                sum_weights = torch.sum(policy_weight).detach().cpu().numpy()
+                sum_weights_squared = torch.sum(policy_weight ** 2).detach().cpu().numpy()
+                effective_sample_size = (sum_weights ** 2) / (sum_weights_squared + 1e-8)
                 
                 print(f'** iter{num}: policy_loss={policy_loss.item():.2f}, ret={eval_ret_mean:.2f}+-{eval_ret_std:.2f}, cost={eval_cost_mean:.2f}+-{eval_cost_std:.2f}, violation_rate={eval_violation_rate:.2f}, length={eval_length_mean:.2f}, lambda={self.lambda_.item():.2f}, num_oods={mixed_num_oods}')
                 
@@ -400,6 +441,13 @@ class IcilDICEv3(nn.Module):
                                     'train/disc_loss':         disc_loss.item(),
                                     'train/disc_gradient_penalty':  self.current_disc_gradient_penalty,
                                     'train/lambda':            self.lambda_.item(),
+                                    'train/mixed_nu_mean':     mixed_nu.mean().item(),
+                                    'train/mixed_adv_mean':    mixed_adv.mean().item(),
+                                    'train/sum_weights':       sum_weights,
+                                    'train/effective_sample_size': effective_sample_size,
+                                    'train/mean_policy_weight':       mean_weight,
+                                    'train/mixed_r_max':       mixed_r.max().item(),
+                                    'train/mixed_r_min':       mixed_r.min().item(),
                                     'eval/episode_return':     eval_ret_mean,
                                     'eval/episode_cost':       eval_cost_mean,
                                     'eval/violation_rate':     eval_violation_rate,
@@ -445,9 +493,12 @@ class IcilDICEv3(nn.Module):
         costs = []
         lengths = []
         rets_until_violation = []
-        cost_threshold = performance_dict[env.spec.id]['cost_threshold']
-        max_score = performance_dict[env.spec.id]['safe_expert_score']
-        min_score = performance_dict[env.spec.id]['random_score']
+        # cost_threshold = performance_dict[env.spec.id]['cost_threshold']
+        # max_score = performance_dict[env.spec.id]['safe_expert_score']
+        # min_score = performance_dict[env.spec.id]['random_score']
+        cost_threshold = self.cost_threshold
+        max_score = self.max_score
+        min_score = self.min_score
 
         # maxtimestep = 1000
         for num in range(0, num_evaluation):
@@ -489,9 +540,13 @@ class IcilDICEv3(nn.Module):
                 done = terminate or truncated
                     
                 t += 1
-            
-            normalized_ret = (ret - min_score) / (max_score - min_score) * 100.
-            normalized_ret_until_violation = (ret_until_violation - min_score) / (max_score - min_score) * 100.
+
+            if max_score is not None and min_score is not None:
+                normalized_ret = (ret - min_score) / (max_score - min_score) * 100.
+                normalized_ret_until_violation = (ret_until_violation - min_score) / (max_score - min_score) * 100.
+            else:
+                normalized_ret = ret
+                normalized_ret_until_violation = ret_until_violation
 
             rets.append(normalized_ret)
             costs.append(cum_cost)

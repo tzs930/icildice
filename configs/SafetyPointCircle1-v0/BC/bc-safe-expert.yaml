@@ -10,13 +10,17 @@ wandb:
 dataset:
   dataset_path: 'dataset/SafetyPointCircle1-v0'
   expert:
-    types: ['safe-expert-v0']
-    start_indices: [0]
-    num_trajs: 1000
+    types:         ['safe-expert-v0', 'unsafe-expert-v0']
+    start_indices: [0, 0]
+    num_trajs:     [1000, 0]
   safe:
     types: []
     start_indices: []
-    num_trajs: null
+    num_trajs: []
+  mixed:
+    types: []
+    start_indices: []
+    num_trajs: []
 
 replay_buffer:
   class: 'MDPReplayBuffer'

@@ -16,8 +16,11 @@ import torch
 import time
 
 from imitation.bc import BC
+from imitation.bc_filtered import BCFiltered
 from imitation.jointbc import JointBC
+from imitation.bc_jointfiltered import BCJointFiltered
 from imitation.demodice import DemoDICESafe
+from imitation.demodice_reg import DemoDICEReg
 from imitation.icildice import IcilDICE
 from imitation.icildice_v2 import IcilDICEv2
 from imitation.icildice_v3 import IcilDICEv3
@@ -179,7 +182,38 @@ def train(configs):
         trainer.train(total_iteration = configs['train']['total_iteration'],
                       eval_freq = configs['train']['eval_freq'],
                       batch_size = configs['train']['batch_size'])
+
+    elif 'BCFiltered' == configs['method']:
+        trainer = BCFiltered(
+            policy = policy,
+            env = env,
+            configs=configs,
+            best_policy = best_policy,
+            expert_replay_buffer=expert_replay_buffer,
+            safe_replay_buffer=safe_replay_buffer,
+            mixed_replay_buffer=mixed_replay_buffer,
+            n_train=n_train,
+        )
         
+        trainer.train(total_iteration = configs['train']['total_iteration'],
+                      eval_freq = configs['train']['eval_freq'],
+                      batch_size = configs['train']['batch_size'])
+
+    elif 'BCJointFiltered' == configs['method']:
+        trainer = BCJointFiltered(
+            policy = policy,
+            env = env,
+            configs=configs,
+            best_policy = best_policy,
+            expert_replay_buffer=expert_replay_buffer,
+            safe_replay_buffer=safe_replay_buffer,
+            mixed_replay_buffer=mixed_replay_buffer,
+            n_train=n_train,
+        )
+        trainer.train(total_iteration = configs['train']['total_iteration'],
+                      eval_freq = configs['train']['eval_freq'],
+                      batch_size = configs['train']['batch_size'])
+
     elif 'JointBC' == configs['method']:
         policy = GaussianPolicy(
                 hidden_sizes=configs['policy']['layer_sizes'],
@@ -225,7 +259,24 @@ def train(configs):
                       eval_freq = configs['train']['eval_freq'],
                       batch_size = configs['train']['batch_size'])
 
-    elif 'IcilDICEv3' == configs['method']:
+    elif 'DemoDICEReg' == configs['method']:
+
+        trainer = DemoDICEReg(
+            policy = policy,
+            best_policy = best_policy,
+            env = env,
+            configs = configs,
+            init_obs_buffer = init_obs_buffer,
+            expert_replay_buffer = expert_replay_buffer,
+            safe_replay_buffer = safe_replay_buffer,
+            mixed_replay_buffer = mixed_replay_buffer,
+        )
+
+        trainer.train(total_iteration = configs['train']['total_iteration'],
+                      eval_freq = configs['train']['eval_freq'],
+                      batch_size = configs['train']['batch_size'])
+
+    elif 'IcilDICEv3' in configs['method']:
         trainer = IcilDICEv3(
             policy = policy,
             best_policy = best_policy,
@@ -279,7 +330,7 @@ def train(configs):
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--pid", help="process_id", default=0, type=int)
-    parser.add_argument("--config", help="config file", default="configs/SafetyPointCircle1-v0/icildice_v3.yaml")
+    parser.add_argument("--config", help="config file", default="configs/SafetyPointCircle1-v0/bc_jointfiltered.yaml")
     args = parser.parse_args()
     pid = args.pid
 
