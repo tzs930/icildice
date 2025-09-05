@@ -47,7 +47,10 @@ class IcilDICE(nn.Module):
         
         self.n_train = n_train
     
-        self.obs_dim = env.observation_space.low.size
+        if self.add_absorbing_state:
+            self.obs_dim = env.observation_space.low.size + 1
+        else:
+            self.obs_dim = env.observation_space.low.size
         self.action_dim = env.action_space.low.size
         
         self.gamma = configs['train']['gamma']

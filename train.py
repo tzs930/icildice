@@ -44,8 +44,14 @@ def train(configs):
     
     obs_dim    = env.observation_space.low.size 
     action_dim = env.action_space.low.size
-    
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    if torch.backends.mps.is_available():
+        device = 'mps'
+    elif torch.cuda.is_available():
+        device = 'cuda'
+    else:
+        device = 'cpu'
+    configs['device'] = device
     
     # expert_dataset_path = configs['dataset']['expert_path']
     
@@ -54,7 +60,8 @@ def train(configs):
     expert_data_dict, n_expert = preprocess_dataset(configs['dataset']['dataset_path'],
                                                    configs['dataset']['expert']['types'], 
                                                    configs['dataset']['expert']['start_indices'], 
-                                                   num_rollouts=configs['dataset']['expert']['num_trajs'])
+                                                   num_rollouts=configs['dataset']['expert']['num_trajs'],
+                                                   use_absorbing_state=configs['replay_buffer']['use_absorbing_state'])
     
     init_obs_list = [expert_data_dict['initial_observations']]
     if configs['dataset']['safe']['types'] is not None:
@@ -330,7 +337,7 @@ def train(configs):
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--pid", help="process_id", default=0, type=int)
-    parser.add_argument("--config", help="config file", default="configs/SafetyPointCircle1-v0/bc_jointfiltered.yaml")
+    parser.add_argument("--config", help="config file", default="configs/SafetyPointCircle1-v0/icildice_v3.yaml")
     args = parser.parse_args()
     pid = args.pid
 

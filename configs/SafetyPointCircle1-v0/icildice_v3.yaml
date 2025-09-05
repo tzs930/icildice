@@ -1,6 +1,6 @@
-method: IcilDICEv3-fixbug
-env_id: SafetyPointCircle1-v0
-device: cuda
+method: IcilDICEv3-nopu
+env_id: SafetyHopperVelocity-v1
+device: mps
 use_wandb: True #True
 
 wandb:
@@ -8,15 +8,15 @@ wandb:
   entity: 'tzs930'
 
 dataset:
-  dataset_path: 'dataset/SafetyPointCircle1-v0'
+  dataset_path: '/data/dataset/SafetyHopperVelocity-v1'
   expert:
     types: ['safe-expert-v0', 'unsafe-expert-v0'] #, 'safe-expert-v0']
     start_indices: [0, 0] #, 0]
-    num_trajs:     [250, 250]
+    num_trajs:     [5, 5]
   safe:
     types: ['safe-expert-v0', 'safe-medium-v0']
     start_indices: [250, 0]
-    num_trajs:     [250, 250]
+    num_trajs:     [5, 5]
   mixed:
     types: ['safe-expert-v0', 'safe-medium-v0', 'unsafe-expert-v0', 'unsafe-medium-v0']
     start_indices: [500, 500, 500, 500]
@@ -27,6 +27,7 @@ replay_buffer:
   max_replay_buffer_size: 10000000
   standardize_obs: False
   standardize_act: False
+  use_absorbing_state: True
 
 policy:
   class: 'GaussianPolicy'
@@ -57,8 +58,8 @@ train:
   prior_output_size: 10
   prior_net_size: [64, 64]
   fittor_net_size: [256, 256] # More larger
-  uncertainty_safe_quantile: 0.99
-  uncertainty_threshold_update_freq: 100
+  disc_quantile: 0.99
+  threshold_update_freq: 100
   uncertainty_gp_weight: 0.0
   indicator_weight: 1.0
   lambda_starts: 1.0

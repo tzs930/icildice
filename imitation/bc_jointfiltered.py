@@ -23,7 +23,7 @@ def copy_nn_module(source, target):
 
 class BCJointFiltered(nn.Module):
     def __init__(self, policy, env, configs, best_policy=None,
-                expert_replay_buffer=None, safe_replay_buffer=None, mixed_replay_buffer=None, n_train=1,add_absorbing_state=False):
+                expert_replay_buffer=None, safe_replay_buffer=None, mixed_replay_buffer=None, n_train=1):
         
         seed = configs['train']['seed']
         torch.manual_seed(seed)
@@ -40,11 +40,14 @@ class BCJointFiltered(nn.Module):
         self.mixed_replay_buffer = mixed_replay_buffer
 
         self.device = configs['device']
-        self.add_absorbing_state = add_absorbing_state
+        self.add_absorbing_state = configs['replay_buffer']['use_absorbing_state']
         
         self.n_train = n_train
     
-        self.obs_dim = env.observation_space.low.size
+        if self.add_absorbing_state:
+            self.obs_dim = env.observation_space.low.size + 1
+        else:
+            self.obs_dim = env.observation_space.low.size
         self.action_dim = env.action_space.low.size
         
         self.policy_optimizer = optim.Adam(policy.parameters(), lr=float(configs['train']['lr']))

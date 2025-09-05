@@ -1,3 +1,4 @@
+from time import sleep
 import numpy as np
 import random
 
@@ -25,7 +26,7 @@ def copy_nn_module(source, target):
 class IcilDICEv3(nn.Module):
     def __init__(self, policy, env, configs, best_policy=None,
                  init_obs_buffer=None, expert_replay_buffer=None, safe_replay_buffer=None, mixed_replay_buffer=None,
-                 seed=0, n_train=1, add_absorbing_state=False):
+                 seed=0, n_train=1):
         
         seed = configs['train']['seed']
         torch.manual_seed(seed)
@@ -43,13 +44,17 @@ class IcilDICEv3(nn.Module):
         self.safe_replay_buffer = safe_replay_buffer
         self.mixed_replay_buffer = mixed_replay_buffer
         
-        self.add_absorbing_state = add_absorbing_state
+        self.add_absorbing_state = configs['replay_buffer']['use_absorbing_state']
         
         self.device = configs['device']
         
         self.n_train = n_train
     
-        self.obs_dim = env.observation_space.low.size
+        if self.add_absorbing_state:
+            self.obs_dim = env.observation_space.low.size + 1
+        else:
+            self.obs_dim = env.observation_space.low.size
+            
         self.action_dim = env.action_space.low.size
         
         self.gamma = configs['train']['gamma']
@@ -90,8 +95,8 @@ class IcilDICEv3(nn.Module):
             nn.Sigmoid()
         )
         
-        self.uncertainty_safe_quantile = float(configs['train']['uncertainty_safe_quantile']) # e.g. 0.998 Quantile
-        self.uncertainty_threshold_update_freq = int(configs['train']['uncertainty_threshold_update_freq'])
+        self.uncertainty_safe_quantile = float(configs['train']['disc_quantile']) # e.g. 0.998 Quantile
+        self.uncertainty_threshold_update_freq = int(configs['train']['threshold_update_freq'])
         self.pretrain_steps = int(configs['train']['pretrain_steps'])
         self.current_uc_gradient_penalty = 0.
         self.current_disc_gradient_penalty = 0.

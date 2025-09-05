@@ -42,19 +42,32 @@ def train(configs):
     # env = NormalizedBoxEnv(gym.make(configs['env_id']))
     env = safety_gym.make(configs['env_id'])
     
-    obs_dim    = env.observation_space.low.size 
+    if configs['replay_buffer']['use_absorbing_state']:
+        obs_dim = env.observation_space.low.size + 1
+    else:
+        obs_dim = env.observation_space.low.size
+
     action_dim = env.action_space.low.size
-    
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    if torch.backends.mps.is_available():
+        device = 'mps'
+    elif torch.cuda.is_available():
+        device = 'cuda'
+    else:
+        device = 'cpu'
+    configs['device'] = device
     
     # expert_dataset_path = configs['dataset']['expert_path']
     
     envname = configs['env_id']
+    max_episode_len = env.spec.max_episode_steps
     print(f'-- Preprocessing dataset... ({envname})')
     expert_data_dict, n_expert = preprocess_dataset(configs['dataset']['dataset_path'],
                                                    configs['dataset']['expert']['types'], 
                                                    configs['dataset']['expert']['start_indices'], 
-                                                   num_rollouts=configs['dataset']['expert']['num_trajs'])
+                                                   num_rollouts=configs['dataset']['expert']['num_trajs'],
+                                                   use_absorbing_state=configs['replay_buffer']['use_absorbing_state'],
+                                                   max_episode_len=max_episode_len)
     
     init_obs_list = [expert_data_dict['initial_observations']]
     if configs['dataset']['safe']['types'] is not None:
@@ -65,7 +78,9 @@ def train(configs):
             safe_data_dict, n_safe = preprocess_dataset(configs['dataset']['dataset_path'],
                                                     configs['dataset']['safe']['types'], 
                                                     configs['dataset']['safe']['start_indices'], 
-                                                    num_rollouts=configs['dataset']['safe']['num_trajs'])
+                                                    num_rollouts=configs['dataset']['safe']['num_trajs'],
+                                                    use_absorbing_state=configs['replay_buffer']['use_absorbing_state'],
+                                                    max_episode_len=max_episode_len)
             init_obs_list.append(safe_data_dict['initial_observations'])
     else:
         safe_data_dict = None
@@ -79,7 +94,9 @@ def train(configs):
             mixed_data_dict, n_mixed = preprocess_dataset(configs['dataset']['dataset_path'],
                                                     configs['dataset']['mixed']['types'], 
                                                     configs['dataset']['mixed']['start_indices'], 
-                                                    num_rollouts=configs['dataset']['mixed']['num_trajs'])
+                                                    num_rollouts=configs['dataset']['mixed']['num_trajs'],
+                                                    use_absorbing_state=configs['replay_buffer']['use_absorbing_state'],
+                                                    max_episode_len=max_episode_len)
             init_obs_list.append(mixed_data_dict['initial_observations'])
     else:
         mixed_data_dict = None
@@ -349,27 +366,16 @@ if __name__ == "__main__":
         "use_wandb":                        [True],
         "wandb/project":                    ['offline-icil-diverse-envs'],
         "wandb/entity":                     ['tzs930'],
-        "env_id":                           ['SafetyAntVelocity-v1', 'SafetyHalfCheetahVelocity-v1', 'SafetyWalker2dVelocity-v1'], #, 'SafetyPointCircle1-v0', 'SafetyPointCircle2-v0'],
-        # "method":                           ["BC", "DemoDICESafe", "IcilDICEv3-afterfix"],
-        "method":                           ["BC", "DemoDICESafe", "IcilDICEv3-nopu"],
+        "train/seed":                       [0,1,2,3,4],
+        "env_id":                           ['SafetySwimmerVelocity-v1', 'SafetyHopperVelocity-v1'], #, 'SafetyPointCircle1-v0', 'SafetyPointCircle2-v0'],
+        "method":                           ["IcilDICEv3-nopu","BC","BCFiltered","BCJointFiltered","DemoDICESafe","DemoDICEReg"],
         "dataset/expert/num_trajs":         [[1,1], [5,5]], #, [5, 5], [10, 10]], #, [500, 0], [0, 500]],
         "dataset/safe/num_trajs":           [[1,1], [5,5]], #, [500, 0], [0, 500]],
+        "replay_buffer/use_absorbing_state": [True],
         "replay_buffer/standardize_obs":    [False],
         "train/pretrain_steps":             [0],
         "train/indicator_weight":           [1.0],
         "train/disc_gp_weight":             [0.0],
-        # "train/lambda_starts":              [1.0],
-        # "train/uncertainty_safe_quantile":  ['0.99'],
-        # "train/nu_gp_weight":               [10.0],
-        # "train/uncertainty_threshold_update_freq": [100],
-        # "train/uncertainty_safe_quantile":  [0.99],
-        # "train/lr_lambda":                  [3e-4], 
-        # "train/uncertainty_gp_weight":      [10.],
-        # "train/n_prior_nets":               [2],
-        # "train/use_soft_indicator":         [False],
-        # "train/alpha":                      [1.0, 0.1, 0.01, 0.001, 0.0],
-        # "train/beta":                       ['0.0'],
-        "train/seed":                       [0,1,2],
         "train/disc_quantile":              ['0.99'],
         "train/threshold_update_freq":      [100],
         "train/disc_learning_during_train": [True],

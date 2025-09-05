@@ -25,7 +25,7 @@ def copy_nn_module(source, target):
 class DemoDICESafe(nn.Module):
     def __init__(self, policy, env, configs, best_policy=None,
                  init_obs_buffer=None, expert_replay_buffer=None, safe_replay_buffer=None, seed=0, 
-                 n_train=1, add_absorbing_state=False):
+                 n_train=1):
         
         seed = configs['train']['seed']
         torch.manual_seed(seed)
@@ -42,13 +42,16 @@ class DemoDICESafe(nn.Module):
         self.expert_replay_buffer = expert_replay_buffer
         self.safe_replay_buffer = safe_replay_buffer
 
-        self.add_absorbing_state = add_absorbing_state
+        self.add_absorbing_state = configs['replay_buffer']['use_absorbing_state']
         
         self.device = configs['device']
         
         self.n_train = n_train
     
-        self.obs_dim = env.observation_space.low.size
+        if self.add_absorbing_state:
+            self.obs_dim = env.observation_space.low.size + 1
+        else:
+            self.obs_dim = env.observation_space.low.size
         self.action_dim = env.action_space.low.size
         
         self.gamma = configs['train']['gamma']
